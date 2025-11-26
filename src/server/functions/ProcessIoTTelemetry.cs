@@ -56,14 +56,36 @@ public class ProcessIoTTelemetry
                     shiftDocument.Status = ShiftStatus.InProgress;
                 }
 
-                session.SmallBoxes = payload.CountersSmall;
-                session.MediumBoxes = payload.CountersMedium;
-                session.LargeBoxes = payload.CountersLarge;
+                // Actualizar contadores solo si vino una caja
+                if (!string.IsNullOrWhiteSpace(payload.BoxSize))
+                {
+                    switch (payload.BoxSize.ToLowerInvariant())
+                    {
+                        case "small":
+                            session.SmallBoxes++;
+                            break;
+                        case "medium":
+                            session.MediumBoxes++;
+                            break;
+                        case "large":
+                            session.LargeBoxes++;
+                            break;
+                    }
+                }
+
+                // Heartbeat/log snapshot for esta sesión
+                var log = new ShiftLog
+                {
+                    Timestamp = payload.Timestamp,
+                    IsRunning = payload.IsRunning,
+                    EventType = payload.Evento,
+                    DeviceId = payload.DeviceId
+                };
+                session.Logs.Add(log);
 
                 if (!string.IsNullOrEmpty(payload.Evento))
                 {
                     session.Events.Add(ShiftEvent.Create(payload.Evento, session.SessionId));
-                    shiftDocument.Events.Add(ShiftEvent.Create(payload.Evento, session.SessionId));
 
                     if (payload.Evento == "STOP")
                     {
@@ -92,7 +114,7 @@ public class ProcessIoTTelemetry
                 shiftDocument.UpdateAggregates();
 
                 await _cosmos.UpsertShiftAsync(shiftDocument, payload.Fecha);
-                await _broadcastRelay.BroadcastAsync(ProductionResponse.FromShift(shiftDocument));
+                await _broadcastRelay.BroadcastAsync(payload.Fecha, metadata.Key, log);
 
                 _logger.LogInformation("Shift processed successfully: {shiftId}", shiftId);
             }

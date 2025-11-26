@@ -30,7 +30,7 @@ public class ProductionResponse
             SessionId = session?.SessionId,
             SessionStartedAt = session?.StartedAt,
             SessionStoppedAt = session?.StoppedAt,
-            IsRunning = shift.Status == ShiftStatus.InProgress,
+            IsRunning = session != null && shift.Status == ShiftStatus.InProgress,
             Timestamp = DateTime.UtcNow,
             SmallBoxes = session?.SmallBoxes ?? 0,
             MediumBoxes = session?.MediumBoxes ?? 0,

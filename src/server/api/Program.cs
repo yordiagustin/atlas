@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
-using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Atlas.Domain;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Devices;
 using Microsoft.Extensions.Options;
@@ -23,9 +23,12 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactSPA", policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyMethod()
-              .AllowAnyHeader();
+        // Academic/demo setup: allow any origin + credentials so SignalR can negotiate
+        policy
+            .SetIsOriginAllowed(_ => true)
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
     });
 });
 
@@ -53,7 +56,7 @@ builder.Services.AddSingleton<ShiftStore>(sp =>
     return new ShiftStore(cosmosClient, DatabaseName, ContainerName);
 });
 
-builder.Services.AddSingleton<ProductionBroadcaster>();
+builder.Services.AddSignalR();
 builder.Services.Configure<BroadcastOptions>(builder.Configuration.GetSection("Broadcast"));
 
 var app = builder.Build();
@@ -64,25 +67,15 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseWebSockets();
 app.UseCors("AllowReactSPA");
 
-app.MapGet("/ws/production", async (HttpContext context, ProductionBroadcaster broadcaster) =>
-{
-    if (!context.WebSockets.IsWebSocketRequest)
-    {
-        return Results.StatusCode((int)HttpStatusCode.BadRequest);
-    }
-
-    using var socket = await context.WebSockets.AcceptWebSocketAsync();
-    await broadcaster.HandleClientAsync(socket, context.RequestAborted);
-    return Results.Empty;
-});
+app.MapHub<DashboardHub>("/hubs/dashboard");
 
 app.MapPost("/api/internal/production/broadcast", async (
-    ProductionResponse snapshot,
+    BroadcastNotification notification,
     HttpContext context,
-    ProductionBroadcaster broadcaster,
+    ShiftStore store,
+    IHubContext<DashboardHub> hub,
     IOptions<BroadcastOptions> options) =>
 {
     if (!IsAuthorized(context, options.Value))
@@ -90,7 +83,15 @@ app.MapPost("/api/internal/production/broadcast", async (
         return Results.StatusCode((int)HttpStatusCode.Unauthorized);
     }
 
-    await broadcaster.BroadcastAsync(snapshot);
+    var shift = await store.GetShiftAsync(notification.Date, notification.ShiftKey);
+    var snapshot = ProductionResponse.FromShift(shift);
+
+    await hub.Clients.All.SendAsync("snapshot", snapshot);
+    if (notification.Log is not null)
+    {
+        await hub.Clients.All.SendAsync("log", notification.Log);
+    }
+
     return Results.Accepted();
 });
 
@@ -131,14 +132,46 @@ app.MapGet("/api/events", async (string date, string shift, ShiftStore store) =>
         return Results.NotFound(new { error = "Shift not found" });
     }
 
-    return Results.Ok(doc.Events);
+    var events = doc.Sessions
+        .SelectMany(s => s.Events.Select(e => new
+        {
+            e.Id,
+            e.Type,
+            e.Timestamp,
+            SessionId = s.SessionId
+        }));
+
+    return Results.Ok(events);
 }).WithName("GetEvents");
+
+app.MapGet("/api/logs", async (string date, string shift, ShiftStore store) =>
+{
+    var doc = await store.GetShiftAsync(date, shift);
+    if (doc == null)
+    {
+        return Results.NotFound(new { error = "Shift not found" });
+    }
+
+    var logs = doc.Sessions
+        .SelectMany(s => s.Logs.Select(l => new
+        {
+            l.Id,
+            l.Timestamp,
+            l.IsRunning,
+            l.EventType,
+            l.DeviceId,
+            SessionId = s.SessionId
+        }))
+        .OrderBy(l => l.Timestamp);
+
+    return Results.Ok(logs);
+}).WithName("GetLogs");
 
 app.MapPost("/api/control/start", async (
     ControlRequest request,
     ShiftStore store,
     ServiceClient serviceClient,
-    ProductionBroadcaster broadcaster) =>
+    IHubContext<DashboardHub> hub) =>
 {
     if (!ShiftMetadataRegistry.TryResolve(request.Shift, out var metadata))
     {
@@ -150,12 +183,11 @@ app.MapPost("/api/control/start", async (
     var session = shift.StartNewSession();
     shift.ActiveSessionId = session.SessionId;
     shift.Status = ShiftStatus.InProgress;
-    shift.AddEvent("START", session.SessionId);
     session.AddEvent("START");
 
     await store.SaveAsync(shift);
     await SendCommandAsync(serviceClient, "START", metadata.ControlValue);
-    await broadcaster.BroadcastAsync(ProductionResponse.FromShift(shift));
+    await hub.Clients.All.SendAsync("snapshot", ProductionResponse.FromShift(shift));
 
     return Results.Ok(new { message = "START command sent successfully" });
 }).WithName("SendStart");
@@ -164,7 +196,7 @@ app.MapPost("/api/control/stop", async (
     ControlRequest request,
     ShiftStore store,
     ServiceClient serviceClient,
-    ProductionBroadcaster broadcaster) =>
+    IHubContext<DashboardHub> hub) =>
 {
     if (!ShiftMetadataRegistry.TryResolve(request.Shift, out var metadata))
     {
@@ -182,12 +214,11 @@ app.MapPost("/api/control/stop", async (
     session.StoppedAt = DateTime.UtcNow;
     shift.Status = ShiftStatus.Completed;
     shift.ActiveSessionId = null;
-    shift.AddEvent("STOP", session.SessionId);
     session.AddEvent("STOP");
 
     await store.SaveAsync(shift);
     await SendCommandAsync(serviceClient, "STOP", metadata.ControlValue);
-    await broadcaster.BroadcastAsync(ProductionResponse.FromShift(shift));
+    await hub.Clients.All.SendAsync("snapshot", ProductionResponse.FromShift(shift));
 
     return Results.Ok(new { message = "STOP command sent successfully" });
 }).WithName("SendStop");
@@ -196,7 +227,7 @@ app.MapPost("/api/control/restart", async (
     ControlRequest request,
     ShiftStore store,
     ServiceClient serviceClient,
-    ProductionBroadcaster broadcaster) =>
+    IHubContext<DashboardHub> hub) =>
 {
     if (!ShiftMetadataRegistry.TryResolve(request.Shift, out var metadata))
     {
@@ -208,12 +239,11 @@ app.MapPost("/api/control/restart", async (
     var session = shift.GetActiveSession() ?? shift.StartNewSession();
 
     session.ResetCounters();
-    shift.AddEvent("RESTART", session.SessionId);
     session.AddEvent("RESTART");
 
     await store.SaveAsync(shift);
     await SendCommandAsync(serviceClient, "RESTART", metadata.ControlValue);
-    await broadcaster.BroadcastAsync(ProductionResponse.FromShift(shift));
+    await hub.Clients.All.SendAsync("snapshot", ProductionResponse.FromShift(shift));
 
     return Results.Ok(new { message = "RESTART command sent successfully" });
 }).WithName("SendRestart");
@@ -343,61 +373,15 @@ public class ShiftStore
     public static string BuildShiftId(string date, string shiftKey) => $"shift-{date}-{shiftKey}";
 }
 
-public class ProductionBroadcaster
+public class DashboardHub : Hub
 {
-    private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+}
 
-    public async Task HandleClientAsync(WebSocket socket, CancellationToken cancellationToken)
-    {
-        var id = Guid.NewGuid().ToString();
-        _clients.TryAdd(id, socket);
-
-        var buffer = new byte[4];
-        try
-        {
-            while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
-            {
-                var result = await socket.ReceiveAsync(buffer, cancellationToken);
-                if (result.MessageType == WebSocketMessageType.Close)
-                {
-                    break;
-                }
-            }
-        }
-        finally
-        {
-            _clients.TryRemove(id, out _);
-            if (socket.State != WebSocketState.Closed)
-            {
-                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-            }
-        }
-    }
-
-    public async Task BroadcastAsync(ProductionResponse snapshot)
-    {
-        var payload = JsonSerializer.SerializeToUtf8Bytes(snapshot);
-        var tasks = _clients.ToList().Select(async pair =>
-        {
-            try
-            {
-                if (pair.Value.State == WebSocketState.Open)
-                {
-                    await pair.Value.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None);
-                }
-                else
-                {
-                    _clients.TryRemove(pair.Key, out _);
-                }
-            }
-            catch
-            {
-                _clients.TryRemove(pair.Key, out _);
-            }
-        });
-
-        await Task.WhenAll(tasks);
-    }
+public class BroadcastNotification
+{
+    public string Date { get; set; } = string.Empty;
+    public string ShiftKey { get; set; } = string.Empty;
+    public ShiftLog? Log { get; set; }
 }
 
 public class ControlRequest

@@ -16,7 +16,7 @@ public class BroadcastRelay
         _configuration = configuration;
     }
 
-    public async Task BroadcastAsync(ProductionResponse snapshot)
+    public async Task BroadcastAsync(string date, string shiftKey, ShiftLog? log)
     {
         var url = _configuration["BroadcastUrl"];
         var apiKey = _configuration["BroadcastKey"];
@@ -26,9 +26,16 @@ public class BroadcastRelay
             return;
         }
 
+        var notification = new
+        {
+            date,
+            shiftKey,
+            log
+        };
+
         var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = new StringContent(JsonSerializer.Serialize(snapshot), Encoding.UTF8, "application/json")
+            Content = new StringContent(JsonSerializer.Serialize(notification), Encoding.UTF8, "application/json")
         };
         request.Headers.Add("X-Api-Key", apiKey);
 

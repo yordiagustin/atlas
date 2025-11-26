@@ -1,5 +1,4 @@
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? 'http://localhost:5186').replace(/\/$/, '')
-const API_URL = new URL(API_BASE_URL)
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
@@ -41,6 +40,15 @@ export interface ShiftSessionSummary {
   largeBoxes: number
   total: number
   events: ShiftEvent[]
+}
+
+export interface ShiftLog {
+  id: string
+  timestamp: string
+  isRunning: boolean
+  eventType?: string
+  sessionId: string
+  deviceId?: string
 }
 
 export interface ShiftReport {
@@ -91,8 +99,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const apiClient = {
   getStatus: () => request<StatusResponse>('/api/status'),
   getCurrentProduction: () => request<ProductionResponse>('/api/production/current'),
-  getEvents: (date: string, shift: string) =>
-    request<ShiftEvent[]>(`/api/events?date=${encodeURIComponent(date)}&shift=${encodeURIComponent(shift)}`),
+  getLogs: (date: string, shift: string) =>
+    request<ShiftLog[]>(`/api/logs?date=${encodeURIComponent(date)}&shift=${encodeURIComponent(shift)}`),
   getDailyProduction: (date: string) =>
     request<ShiftReport[]>(`/api/production/daily?date=${encodeURIComponent(date)}`),
   sendStartCommand: (shift: ShiftKey) =>
@@ -121,10 +129,13 @@ export const apiClient = {
     }),
 }
 
-export const createProductionSocket = () => {
-  const protocol = API_URL.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(`${protocol}//${API_URL.host}/ws/production`)
-}
+import * as signalR from '@microsoft/signalr'
+
+export const createDashboardHubConnection = () =>
+  new signalR.HubConnectionBuilder()
+    .withUrl(`${API_BASE_URL}/hubs/dashboard`, { withCredentials: false })
+    .withAutomaticReconnect()
+    .build()
 
 export type { ShiftKey }
 

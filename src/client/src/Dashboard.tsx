@@ -13,6 +13,14 @@ import {
   createTheme,
   CssBaseline,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  Button,
+  Divider,
+  CircularProgress,
 } from '@mui/material'
 import type { Theme } from '@mui/material'
 import LightModeIcon from '@mui/icons-material/LightMode'
@@ -23,10 +31,12 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined'
 import AllInboxOutlinedIcon from '@mui/icons-material/AllInboxOutlined'
+import LanOutlinedIcon from '@mui/icons-material/LanOutlined'
+import * as signalR from '@microsoft/signalr'
 
 import Reports from './Reports'
-import { apiClient, createProductionSocket } from './server'
-import type { ProductionResponse, ShiftKey } from './server'
+import { apiClient, createDashboardHubConnection } from './server'
+import type { ProductionResponse, ShiftKey, ShiftLog } from './server'
 
 type ShiftLabel = 'Mañana' | 'Tarde' | 'Noche'
 
@@ -73,7 +83,7 @@ function Dashboard() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'reports'>('dashboard')
   const [isRunning, setIsRunning] = useState(false)
   const [activeShift, setActiveShift] = useState<ShiftLabel>('Mañana')
-  const [isDarkMode, setIsDarkMode] = useState(false)
+  const [isDarkMode, setIsDarkMode] = useState(true)
   const [activeTime, setActiveTime] = useState(0) // tiempo en segundos
   const [production, setProduction] = useState<ProductionResponse | null>(null)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
@@ -81,13 +91,20 @@ function Dashboard() {
   const [isActionLoading, setIsActionLoading] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [socketReady, setSocketReady] = useState(false)
+  const hubRef = useRef<signalR.HubConnection | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [pendingAction, setPendingAction] = useState<null | (() => Promise<unknown>)>(null)
+  const [confirmMessage, setConfirmMessage] = useState('')
+  const [logs, setLogs] = useState<ShiftLog[]>([])
+  const [isLogsLoading, setIsLogsLoading] = useState(false)
+  const [realtimeEnabled, setRealtimeEnabled] = useState(false)
   
   const timerRef = useRef<HTMLDivElement>(null)
   const prevTimeRef = useRef<string>('')
 
   const tabs: { label: string; value: 'dashboard' | 'reports' }[] = [
     { label: 'Dashboard', value: 'dashboard' },
-    { label: 'Reports', value: 'reports' },
+    { label: 'Reportes', value: 'reports' },
   ]
 
   // Timer que cuenta cuando está activo
@@ -248,9 +265,31 @@ function Dashboard() {
   const applySnapshot = useCallback((snapshot: ProductionResponse) => {
     setProduction(snapshot)
     setIsRunning(snapshot.isRunning)
-    setActiveShift(resolveShiftLabel(snapshot.shiftKey, snapshot.shiftName))
+    if (snapshot.isRunning && snapshot.shiftKey) {
+      setActiveShift(resolveShiftLabel(snapshot.shiftKey, snapshot.shiftName))
+    }
     setLastUpdated(snapshot.timestamp)
   }, [])
+
+  const fetchLogs = useCallback(
+    async (currentDate: string, shiftKey: ShiftKey) => {
+      setIsLogsLoading(true)
+      try {
+        const data = await apiClient.getLogs(currentDate, shiftKey)
+        setLogs((prev) => {
+          const byId = new Map<string, ShiftLog>()
+          for (const log of prev) byId.set(log.id, log)
+          for (const log of data) byId.set(log.id, log)
+          return Array.from(byId.values())
+        })
+      } catch (error) {
+        console.error('Error getting logs', error)
+      } finally {
+        setIsLogsLoading(false)
+      }
+    },
+    [],
+  )
 
   const refreshDashboardData = useCallback(async () => {
     setIsRefreshing(true)
@@ -261,38 +300,77 @@ function Dashboard() {
         apiClient.getCurrentProduction(),
       ])
       setIsRunning(status.isRunning)
-      setActiveShift(resolveShiftLabel(status.shiftKey, status.activeShift))
+      if (status.isRunning && status.shiftKey) {
+        setActiveShift(resolveShiftLabel(status.shiftKey, status.activeShift))
+      }
       setLastUpdated(status.timestamp)
       applySnapshot(currentProduction)
+
+      const today = new Date().toISOString().slice(0, 10)
+      const shiftKey = SHIFT_TO_API[activeShift]
+      void fetchLogs(today, shiftKey)
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Error al contactar la API')
     } finally {
       setIsRefreshing(false)
     }
-  }, [applySnapshot])
+  }, [activeShift, applySnapshot, fetchLogs])
 
+  // Abrir/cerrar conexión SignalR solo mientras el sistema está en marcha
   useEffect(() => {
-    refreshDashboardData()
-    const interval = window.setInterval(refreshDashboardData, 15000)
-    return () => window.clearInterval(interval)
-  }, [refreshDashboardData])
+    if (realtimeEnabled) {
+      if (!hubRef.current) {
+        const connection = createDashboardHubConnection()
+        hubRef.current = connection
 
-  useEffect(() => {
-    const socket = createProductionSocket()
-    socket.onopen = () => setSocketReady(true)
-    socket.onclose = () => setSocketReady(false)
-    socket.onerror = () => setApiError('Error en el canal en tiempo real')
-    socket.onmessage = (event) => {
-      try {
-        const snapshot = JSON.parse(event.data) as ProductionResponse
-        applySnapshot(snapshot)
-      } catch (error) {
-        console.error('Invalid snapshot payload', error)
+        connection.on('snapshot', (snapshot: ProductionResponse) => {
+          applySnapshot(snapshot)
+        })
+
+        connection.on('log', (log: ShiftLog) => {
+          setLogs((prev) => [...prev, log])
+        })
+
+        connection.onreconnected(() => {
+          setSocketReady(true)
+        })
+
+        connection.onclose(() => {
+          setSocketReady(false)
+          hubRef.current = null
+        })
+
+        connection
+          .start()
+          .then(() => setSocketReady(true))
+          .catch((error) => {
+            console.error('SignalR connection error', error)
+            setApiError('Error en el canal en tiempo real')
+          })
+      }
+    } else {
+      if (hubRef.current) {
+        hubRef.current
+          .stop()
+          .catch(() => {
+            // ignore
+          })
+        hubRef.current = null
+        setSocketReady(false)
       }
     }
 
-    return () => socket.close()
-  }, [applySnapshot])
+    return () => {
+      if (hubRef.current) {
+        hubRef.current
+          .stop()
+          .catch(() => {
+            // ignore
+          })
+        hubRef.current = null
+      }
+    }
+  }, [realtimeEnabled, applySnapshot])
 
   const executeAction = useCallback(
     async (action: () => Promise<unknown>) => {
@@ -309,25 +387,63 @@ function Dashboard() {
     [refreshDashboardData],
   )
 
+  const openConfirmation = (message: string, action: () => Promise<unknown>) => {
+    setConfirmMessage(message)
+    setPendingAction(() => action)
+    setConfirmOpen(true)
+  }
+
+  const handleConfirm = async () => {
+    if (!pendingAction) return
+    setConfirmOpen(false)
+    await executeAction(pendingAction)
+    setPendingAction(null)
+  }
+
+  const handleCancelConfirm = () => {
+    setConfirmOpen(false)
+    setPendingAction(null)
+  }
+
   const handleToggle = () => {
     const shiftKey = SHIFT_TO_API[activeShift]
-    void executeAction(() =>
-      isRunning ? apiClient.sendStopCommand(shiftKey) : apiClient.sendStartCommand(shiftKey),
-    )
+    if (isRunning) {
+      openConfirmation(
+        '¿Deseas detener la faja y cerrar la sesión actual?',
+        async () => {
+          const result = await apiClient.sendStopCommand(shiftKey)
+          setRealtimeEnabled(false)
+          return result
+        },
+      )
+    } else {
+      openConfirmation(
+        `¿Iniciar la faja para el turno ${activeShift}?`,
+        async () => {
+          const result = await apiClient.sendStartCommand(shiftKey)
+          setRealtimeEnabled(true)
+          return result
+        },
+      )
+    }
   }
 
   const handleRestart = () => {
     const shiftKey = SHIFT_TO_API[activeShift]
-    setActiveTime(0)
-    void executeAction(() => apiClient.sendRestartCommand(shiftKey))
+    openConfirmation(
+      'Esta acción reiniciará los contadores de la sesión actual a 0. ¿Continuar?',
+      async () => {
+        setActiveTime(0)
+        return apiClient.sendRestartCommand(shiftKey)
+      },
+    )
   }
 
   const handleShiftSelect = (turno: ShiftLabel) => {
-    if (turno === activeShift || isRunning || isActionLoading) return
-    void executeAction(async () => {
-      await apiClient.sendShiftChangeCommand(SHIFT_TO_API[turno])
-      setActiveShift(turno)
-    })
+    // Solo cambiar la selección local; el turno real se define cuando se presiona Start.
+    if (turno === activeShift || isActionLoading) return
+    if (isRunning) return
+    setActiveShift(turno)
   }
 
   const toggleTheme = () => {
@@ -405,13 +521,17 @@ function Dashboard() {
                   component="button"
                   type="button"
                   onClick={() => setActiveTab(tab.value)}
-                  sx={{
+                  sx={(theme) => ({
                     border: 'none',
                     background: 'none',
                     cursor: 'pointer',
                     padding: '16px 4px 12px',
                     position: 'relative',
-                    color: isActive ? 'primary.main' : 'text.secondary',
+                    color: isActive
+                      ? theme.palette.mode === 'dark'
+                        ? theme.palette.common.white
+                        : theme.palette.text.primary
+                      : theme.palette.text.secondary,
                     fontWeight: isActive ? 600 : 500,
                     fontSize: '0.95rem',
                     letterSpacing: 0.3,
@@ -424,13 +544,20 @@ function Dashboard() {
                       width: '100%',
                       height: 3,
                       borderRadius: 999,
-                      backgroundColor: isActive ? 'primary.main' : 'transparent',
+                      backgroundColor: isActive
+                        ? theme.palette.mode === 'dark'
+                          ? theme.palette.common.white
+                          : theme.palette.text.primary
+                        : 'transparent',
                       transition: 'background-color 0.2s ease',
                     },
                     '&:hover': {
-                      color: 'primary.main',
+                      color:
+                        theme.palette.mode === 'dark'
+                          ? theme.palette.common.white
+                          : theme.palette.text.primary,
                     },
-                  }}
+                  })}
                 >
                   {tab.label}
                 </Box>
@@ -519,7 +646,7 @@ function Dashboard() {
                       Estado del Sistema
                     </Typography>
                     {/* Chips de turno */}
-                    <Stack direction="row" spacing={1} flexWrap="nowrap">
+                    <Stack direction="row" spacing={1.5} flexWrap="nowrap">
                       {SHIFT_LABELS.map((turno) => (
                         <Chip
                           key={turno}
@@ -528,24 +655,30 @@ function Dashboard() {
                           disabled={isRunning || actionDisabled}
                           sx={{
                             cursor: isRunning ? 'not-allowed' : 'pointer',
-                            opacity: isRunning && activeShift !== turno ? 0.5 : 1,
-                            fontWeight: activeShift === turno ? 600 : 400,
-                            fontSize: '0.75rem',
-                            height: 28,
-                            px: 1.5,
+                            opacity: activeShift === turno ? 1 : 0.5,
+                            fontWeight: activeShift === turno ? 700 : 400,
+                            fontSize: '0.8rem',
+                            letterSpacing: 0.4,
+                            height: 30,
+                            px: 2,
                             flex: 1,
                             bgcolor: activeShift === turno 
-                              ? 'rgba(255, 255, 255, 0.35)' 
-                              : 'rgba(255, 255, 255, 0.2)',
-                            color: 'white',
-                            border: '1px solid rgba(255, 255, 255, 0.35)',
+                              ? 'rgba(255, 255, 255, 0.6)' 
+                              : 'rgba(255, 255, 255, 0.15)',
+                            color: activeShift === turno
+                              ? 'rgba(20, 20, 20, 0.9)'
+                              : 'rgba(255, 255, 255, 0.95)',
+                            border: activeShift === turno
+                              ? '2px solid rgba(255, 255, 255, 0.9)'
+                              : '1px solid rgba(255, 255, 255, 0.4)',
                             '&:hover': {
                               opacity: isRunning ? (activeShift === turno ? 1 : 0.5) : 1,
                               bgcolor: activeShift === turno 
-                                ? 'rgba(255, 255, 255, 0.4)' 
+                                ? 'rgba(255, 255, 255, 0.8)' 
                                 : 'rgba(255, 255, 255, 0.25)',
                             },
                             transition: 'all 0.3s ease',
+                            boxShadow: 'none',
                           }}
                         />
                       ))}
@@ -710,20 +843,104 @@ function Dashboard() {
             </Card>
           </Box>
 
-          {/* Card Placeholder - 50% para tabla de eventos */}
+          {/* Card Logs / Eventos */}
           <Box sx={{ flex: { xs: 1, lg: '0 0 40%' }, display: 'flex' }}>
-            <Card sx={{ 
-              flex: 1, 
-              display: 'flex', 
-              flexDirection: 'column',
-            }}>
-              <CardContent sx={{ flex: 1, p: 3 }}>
-                <Typography variant="h6" fontWeight={600} color="text.primary" mb={2}>
-                  Eventos
+            <Card
+              sx={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <CardContent sx={{ flex: 1, p: 3, display: 'flex', flexDirection: 'column' }}>
+                <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                  <Typography variant="h6" fontWeight={600} color="text.primary">
+                    Logs
+                  </Typography>
+                  <Box
+                    sx={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 0.75,
+                      px: 1.5,
+                      py: 0.5,
+                      borderRadius: 999,
+                      bgcolor: socketReady ? 'success.main' : 'error.main',
+                      color: 'common.white',
+                      fontSize: '0.75rem',
+                    }}
+                  >
+                    <LanOutlinedIcon sx={{ fontSize: 18 }} />
+                    <span>{socketReady ? 'Tiempo real' : 'Offline'}</span>
+                    {(isLogsLoading || isActionLoading) && (
+                      <CircularProgress
+                        size={14}
+                        sx={{ color: 'common.white', ml: 0.5 }}
+                      />
+                    )}
+                  </Box>
+                </Box>
+                <Typography variant="body2" color="text.secondary" mb={2}>
+                  Últimos mensajes recibidos para el turno seleccionado
                 </Typography>
-                <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ mt: 4 }}>
-                  Tabla de eventos aparecerá aquí
-                </Typography>
+                <Divider />
+                <Box
+                  sx={{
+                    mt: 2,
+                    flex: 1,
+                    minHeight: 260,
+                    maxHeight: '55vh',
+                    overflowY: 'auto',
+                    pr: 1,
+                  }}
+                >
+                  {logs.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      Aún no hay logs para este turno.
+                    </Typography>
+                  ) : (
+                    logs
+                      .slice()
+                      .reverse()
+                      .map((log) => (
+                        <Box
+                          key={log.id}
+                          sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            py: 0.75,
+                            borderBottom: '1px solid',
+                            borderColor: 'divider',
+                          }}
+                        >
+                          <Box sx={{ minWidth: 160 }}>
+                            <Typography variant="caption" color="text.secondary">
+                              {new Date(log.timestamp).toLocaleTimeString()}
+                            </Typography>
+                            <Typography variant="body2" fontWeight={500}>
+                              {log.eventType?.startsWith('BOX_')
+                                ? `Caja detectada: ${
+                                    log.eventType.split('_')[1].toLowerCase() === 'small'
+                                      ? 'Pequeña'
+                                      : log.eventType.split('_')[1].toLowerCase() === 'medium'
+                                      ? 'Mediana'
+                                      : 'Grande'
+                                  }`
+                                : log.eventType ?? (log.isRunning ? 'TELEMETRY' : 'IDLE')}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ textAlign: 'right' }}>
+                            {log.deviceId && (
+                              <Typography variant="caption" color="text.secondary">
+                                Dispositivo: {log.deviceId}
+                              </Typography>
+                            )}
+                          </Box>
+                        </Box>
+                      ))
+                  )}
+                </Box>
               </CardContent>
             </Card>
           </Box>
@@ -732,6 +949,21 @@ function Dashboard() {
       ) : (
         <Reports />
       )}
+
+      <Dialog open={confirmOpen} onClose={handleCancelConfirm}>
+        <DialogTitle>Confirmar acción</DialogTitle>
+        <DialogContent>
+          <DialogContentText>{confirmMessage}</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCancelConfirm} color="inherit">
+            Cancelar
+          </Button>
+          <Button onClick={handleConfirm} color="primary" autoFocus disabled={isActionLoading}>
+            Confirmar
+          </Button>
+        </DialogActions>
+      </Dialog>
     </ThemeProvider>
   )
 }

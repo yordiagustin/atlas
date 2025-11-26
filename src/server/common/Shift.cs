@@ -55,7 +55,6 @@ public class ShiftDocument
 
     public ShiftAggregates Aggregates { get; set; } = new();
     public List<ShiftSession> Sessions { get; set; } = new();
-    public List<ShiftEvent> Events { get; set; } = new();
     public DateTime CreatedAt { get; set; }
     public DateTime LastUpdated { get; set; }
 
@@ -136,11 +135,6 @@ public class ShiftDocument
         Aggregates.LargeBoxes = Sessions.Sum(s => s.LargeBoxes);
         Aggregates.Total = Sessions.Sum(s => s.Total);
     }
-
-    public void AddEvent(string type, string? sessionId = null)
-    {
-        Events.Add(ShiftEvent.Create(type, sessionId));
-    }
 }
 
 public class ShiftSession
@@ -155,6 +149,7 @@ public class ShiftSession
     public int Total => SmallBoxes + MediumBoxes + LargeBoxes;
 
     public List<ShiftEvent> Events { get; set; } = new();
+    public List<ShiftLog> Logs { get; set; } = new();
 
     public void ResetCounters()
     {
@@ -190,5 +185,14 @@ public class ShiftAggregates
     public int MediumBoxes { get; set; }
     public int LargeBoxes { get; set; }
     public int Total { get; set; }
+}
+
+public class ShiftLog
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public bool IsRunning { get; set; }
+    public string? EventType { get; set; }
+    public string? DeviceId { get; set; }
 }
 

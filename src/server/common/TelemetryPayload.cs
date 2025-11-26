@@ -6,9 +6,7 @@ public class TelemetryPayload
     public string Fecha { get; set; } = string.Empty;
     public string Turno { get; set; } = string.Empty;
     public string? SessionId { get; set; }
-    public int CountersSmall { get; set; }
-    public int CountersMedium { get; set; }
-    public int CountersLarge { get; set; }
+    public string BoxSize { get; set; } = string.Empty; // "small" | "medium" | "large"
     public bool IsRunning { get; set; }
     public string? Evento { get; set; }
     public DateTime Timestamp { get; set; }
