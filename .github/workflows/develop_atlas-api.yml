@@ -24,11 +24,10 @@ jobs:
           dotnet-version: '9.x'
 
       - name: Build with dotnet
-        run: dotnet build src/server/atlas.sln --configuration Release
+        run: dotnet build src/server/api/atlas-api.csproj --configuration Release
 
       - name: dotnet publish
-        working-directory: src/server
-        run: dotnet publish api/atlas-api.csproj -c Release -o ../../publish
+        run: dotnet publish src/server/api/atlas-api.csproj -c Release -o ./publish
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
