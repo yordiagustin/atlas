@@ -1,5 +1,6 @@
 namespace functions;
 
+using Atlas.Domain;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
@@ -7,14 +8,17 @@ using System.Text.Json;
 public class ProcessIoTTelemetry
 {
     private readonly ILogger<ProcessIoTTelemetry> _logger;
-    private readonly CosmosService _cosmosService;
+    private readonly Cosmos _cosmos;
+    private readonly BroadcastRelay _broadcastRelay;
 
     public ProcessIoTTelemetry(
         ILogger<ProcessIoTTelemetry> logger,
-        CosmosService cosmosService)
+        Cosmos cosmos,
+        BroadcastRelay broadcastRelay)
     {
         _logger = logger;
-        _cosmosService = cosmosService;
+        _cosmos = cosmos;
+        _broadcastRelay = broadcastRelay;
     }
 
     [Function("ProcessIoTTelemetry")]
@@ -27,7 +31,6 @@ public class ProcessIoTTelemetry
             {
                 _logger.LogInformation("Processing IoT message: {message}", eventData);
 
-                // Deserialize telemetry payload
                 var payload = JsonSerializer.Deserialize<TelemetryPayload>(eventData);
                 if (payload == null)
                 {
@@ -35,103 +38,68 @@ public class ProcessIoTTelemetry
                     continue;
                 }
 
-                // Build shift ID: "shift-{date}-{shift}"
-                var shiftId = $"shift-{payload.Fecha}-{payload.Turno}";
-
-                // Try to get existing shift from Cosmos
-                var shiftDocument = await _cosmosService.GetShiftAsync(shiftId, payload.Fecha);
-
-                if (shiftDocument == null)
+                if (!ShiftMetadataRegistry.TryResolve(payload.Turno, out var metadata))
                 {
-                    // Create new shift document
-                    shiftDocument = CreateNewShift(payload, shiftId);
-
-                    // Add START event if present
-                    if (!string.IsNullOrEmpty(payload.Evento) && payload.Evento == "START")
-                    {
-                        shiftDocument.Events.Add(new ShiftEvent
-                        {
-                            Id = Guid.NewGuid().ToString(),
-                            Type = payload.Evento,
-                            Timestamp = payload.Timestamp
-                        });
-                    }
-
-                    _logger.LogInformation("Creating new shift: {shiftId}", shiftId);
-                }
-                else
-                {
-                    // Update counters
-                    shiftDocument.SmallBoxes = payload.CountersSmall;
-                    shiftDocument.MediumBoxes = payload.CountersMedium;
-                    shiftDocument.LargeBoxes = payload.CountersLarge;
-                    shiftDocument.Total = payload.CountersSmall + payload.CountersMedium + payload.CountersLarge;
-                    shiftDocument.LastUpdated = DateTime.UtcNow;
-
-                    // Add event if present
-                    if (!string.IsNullOrEmpty(payload.Evento))
-                    {
-                        shiftDocument.Events.Add(new ShiftEvent
-                        {
-                            Id = Guid.NewGuid().ToString(),
-                            Type = payload.Evento,
-                            Timestamp = payload.Timestamp
-                        });
-                    }
-
-                    _logger.LogInformation("Updating shift: {shiftId}", shiftId);
+                    _logger.LogWarning("Unknown shift received: {turno}", payload.Turno);
+                    continue;
                 }
 
-                // Update status based on IsRunning
-                shiftDocument.Status = payload.IsRunning ? "IN_PROGRESS" : "COMPLETED";
+                var shiftId = $"shift-{payload.Fecha}-{metadata.Key}";
+                var shiftDocument = await _cosmos.GetShiftAsync(shiftId, payload.Fecha)
+                    ?? ShiftDocument.Create(payload.Fecha, metadata);
+                shiftDocument.EnsureMetadata(metadata);
 
-                // Save to Cosmos
-                await _cosmosService.UpsertShiftAsync(shiftDocument, payload.Fecha);
+                var session = shiftDocument.GetActiveSession();
+                if (session == null)
+                {
+                    session = shiftDocument.EnsureActiveSession();
+                    shiftDocument.Status = ShiftStatus.InProgress;
+                }
 
-                _logger.LogInformation(
-                    "Shift processed successfully: {shiftId}, Total boxes: {total}",
-                    shiftId,
-                    shiftDocument.Total);
+                session.SmallBoxes = payload.CountersSmall;
+                session.MediumBoxes = payload.CountersMedium;
+                session.LargeBoxes = payload.CountersLarge;
+
+                if (!string.IsNullOrEmpty(payload.Evento))
+                {
+                    session.Events.Add(ShiftEvent.Create(payload.Evento, session.SessionId));
+                    shiftDocument.Events.Add(ShiftEvent.Create(payload.Evento, session.SessionId));
+
+                    if (payload.Evento == "STOP")
+                    {
+                        session.StoppedAt = payload.Timestamp;
+                        shiftDocument.Status = ShiftStatus.Completed;
+                        shiftDocument.ActiveSessionId = null;
+                    }
+                    else if (payload.Evento == "START")
+                    {
+                        session.StartedAt = payload.Timestamp;
+                        shiftDocument.Status = ShiftStatus.InProgress;
+                    }
+                    else if (payload.Evento == "RESTART")
+                    {
+                        session.ResetCounters();
+                        shiftDocument.Status = ShiftStatus.InProgress;
+                    }
+                }
+
+                if (!payload.IsRunning && shiftDocument.Status == ShiftStatus.InProgress)
+                {
+                    shiftDocument.Status = ShiftStatus.Completed;
+                }
+
+                shiftDocument.LastUpdated = DateTime.UtcNow;
+                shiftDocument.UpdateAggregates();
+
+                await _cosmos.UpsertShiftAsync(shiftDocument, payload.Fecha);
+                await _broadcastRelay.BroadcastAsync(ProductionResponse.FromShift(shiftDocument));
+
+                _logger.LogInformation("Shift processed successfully: {shiftId}", shiftId);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing IoT message: {message}", eventData);
             }
         }
-    }
-
-    private ShiftDocument CreateNewShift(TelemetryPayload payload, string shiftId)
-    {
-        var (shiftName, startTime, endTime) = GetShiftInfo(payload.Turno);
-
-        return new ShiftDocument
-        {
-            Id = shiftId,
-            Type = "shift",
-            Name = shiftName,
-            Date = payload.Fecha,
-            StartTime = startTime,
-            EndTime = endTime,
-            SmallBoxes = payload.CountersSmall,
-            MediumBoxes = payload.CountersMedium,
-            LargeBoxes = payload.CountersLarge,
-            Total = payload.CountersSmall + payload.CountersMedium + payload.CountersLarge,
-            Status = payload.IsRunning ? "IN_PROGRESS" : "COMPLETED",
-            Events = new List<ShiftEvent>(),
-            CreatedAt = DateTime.UtcNow,
-            LastUpdated = DateTime.UtcNow,
-            PartitionKey = payload.Fecha
-        };
-    }
-
-    private (string name, string startTime, string endTime) GetShiftInfo(string turno)
-    {
-        return turno.ToLower() switch
-        {
-            "manana" => ("Morning", "06:00:00", "14:00:00"),
-            "tarde" => ("Afternoon", "14:00:00", "22:00:00"),
-            "noche" => ("Night", "22:00:00", "06:00:00"),
-            _ => ("Unknown", "00:00:00", "00:00:00")
-        };
     }
 }

@@ -105,7 +105,12 @@
 
 - **React SPA (`src/client`)**
   - UI for operators to select shift, start/stop sessions, visualize live counts and review events/reports.
-  - Polls `/api/status` + `/api/production/current` and will subscribe to websocket updates in future iterations.
+  - Usa WebSockets (`/ws/production`) para recibir actualizaciones en tiempo real y realiza polling como respaldo.
+  - Cliente HTTP central en `src/server.ts` + dashboard que refleja estado/sesiones.
+
+- **Device Simulator (`src/tools/device-simulator`)**
+  - CLI .NET que emula el ESP32 enviando telemetría a IoT Hub (START/STOP/RESTART + contadores).
+  - Configurable mediante `DEVICE_CONNECTION_STRING`, `SIM_SHIFT`, `SIM_DATE`, etc., para pruebas locales.
 
 Use this context to keep backend/services aligned whenever we extend data models or endpoints.
 

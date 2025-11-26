@@ -25,6 +25,8 @@ builder.Services.AddSingleton(sp =>
 });
 
 // Register CosmosService
-builder.Services.AddScoped<CosmosService>();
+builder.Services.AddScoped<Cosmos>();
+builder.Services.AddHttpClient<BroadcastRelay>();
+builder.Services.AddScoped<BroadcastRelay>();
 
 builder.Build().Run();

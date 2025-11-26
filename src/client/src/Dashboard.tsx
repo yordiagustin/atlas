@@ -21,9 +21,11 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import StopIcon from '@mui/icons-material/Stop'
 import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
+import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined'
+import AllInboxOutlinedIcon from '@mui/icons-material/AllInboxOutlined'
 
 import Reports from './Reports'
-import { apiClient } from './server'
+import { apiClient, createProductionSocket } from './server'
 import type { ProductionResponse, ShiftKey } from './server'
 
 type ShiftLabel = 'Mañana' | 'Tarde' | 'Noche'
@@ -55,15 +57,22 @@ const parseApiShift = (value?: string): ShiftLabel => {
     : 'Mañana')
 }
 
-const SPEED_MAX = 200
-const SPEED_RADIUS = 65
-const SPEED_CIRCUMFERENCE = 2 * Math.PI * SPEED_RADIUS
+const SHIFT_KEY_TO_LABEL: Record<string, ShiftLabel> = {
+  manana: 'Mañana',
+  morning: 'Mañana',
+  tarde: 'Tarde',
+  afternoon: 'Tarde',
+  noche: 'Noche',
+  night: 'Noche',
+}
+
+const resolveShiftLabel = (key?: string, fallback?: string): ShiftLabel =>
+  SHIFT_KEY_TO_LABEL[key ?? ''] ?? parseApiShift(fallback)
 
 function Dashboard() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'reports'>('dashboard')
   const [isRunning, setIsRunning] = useState(false)
   const [activeShift, setActiveShift] = useState<ShiftLabel>('Mañana')
-  const [beltSpeed, setBeltSpeed] = useState(0)
   const [isDarkMode, setIsDarkMode] = useState(false)
   const [activeTime, setActiveTime] = useState(0) // tiempo en segundos
   const [production, setProduction] = useState<ProductionResponse | null>(null)
@@ -71,11 +80,10 @@ function Dashboard() {
   const [apiError, setApiError] = useState<string | null>(null)
   const [isActionLoading, setIsActionLoading] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [socketReady, setSocketReady] = useState(false)
   
-  const speedNumberRef = useRef<HTMLDivElement>(null)
   const timerRef = useRef<HTMLDivElement>(null)
   const prevTimeRef = useRef<string>('')
-  const speedCircleRef = useRef<SVGCircleElement>(null)
 
   const tabs: { label: string; value: 'dashboard' | 'reports' }[] = [
     { label: 'Dashboard', value: 'dashboard' },
@@ -96,17 +104,6 @@ function Dashboard() {
       if (interval) window.clearInterval(interval)
     }
   }, [isRunning])
-
-  // Animación del número de velocidad cuando cambia
-  useEffect(() => {
-    if (speedNumberRef.current && beltSpeed > 0) {
-      animate(speedNumberRef.current, {
-        scale: [1, 1.1, 1],
-        duration: 500,
-        easing: 'easeOutQuad',
-      })
-    }
-  }, [beltSpeed])
 
   // Animación del timer - solo los números que cambian
   useEffect(() => {
@@ -143,20 +140,6 @@ function Dashboard() {
 
     prevTimeRef.current = currentTime
   }, [activeTime])
-
-  // Animación del velocímetro
-  useEffect(() => {
-    if (!speedCircleRef.current) return
-
-    const progress = Math.min(beltSpeed, SPEED_MAX) / SPEED_MAX
-    const offset = SPEED_CIRCUMFERENCE * (1 - progress)
-
-    animate(speedCircleRef.current, {
-      strokeDashoffset: offset,
-      duration: 600,
-      easing: 'easeOutQuad',
-    })
-  }, [beltSpeed])
 
 
   const formatTime = (seconds: number) => {
@@ -262,6 +245,13 @@ function Dashboard() {
     },
   })
 
+  const applySnapshot = useCallback((snapshot: ProductionResponse) => {
+    setProduction(snapshot)
+    setIsRunning(snapshot.isRunning)
+    setActiveShift(resolveShiftLabel(snapshot.shiftKey, snapshot.shiftName))
+    setLastUpdated(snapshot.timestamp)
+  }, [])
+
   const refreshDashboardData = useCallback(async () => {
     setIsRefreshing(true)
     try {
@@ -271,22 +261,38 @@ function Dashboard() {
         apiClient.getCurrentProduction(),
       ])
       setIsRunning(status.isRunning)
-      setActiveShift(parseApiShift(status.activeShift))
+      setActiveShift(resolveShiftLabel(status.shiftKey, status.activeShift))
       setLastUpdated(status.timestamp)
-      setBeltSpeed(status.isRunning ? 120 : 0)
-      setProduction(currentProduction)
+      applySnapshot(currentProduction)
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Error al contactar la API')
     } finally {
       setIsRefreshing(false)
     }
-  }, [])
+  }, [applySnapshot])
 
   useEffect(() => {
     refreshDashboardData()
     const interval = window.setInterval(refreshDashboardData, 15000)
     return () => window.clearInterval(interval)
   }, [refreshDashboardData])
+
+  useEffect(() => {
+    const socket = createProductionSocket()
+    socket.onopen = () => setSocketReady(true)
+    socket.onclose = () => setSocketReady(false)
+    socket.onerror = () => setApiError('Error en el canal en tiempo real')
+    socket.onmessage = (event) => {
+      try {
+        const snapshot = JSON.parse(event.data) as ProductionResponse
+        applySnapshot(snapshot)
+      } catch (error) {
+        console.error('Invalid snapshot payload', error)
+      }
+    }
+
+    return () => socket.close()
+  }, [applySnapshot])
 
   const executeAction = useCallback(
     async (action: () => Promise<unknown>) => {
@@ -436,14 +442,15 @@ function Dashboard() {
 
       {activeTab === 'dashboard' ? (
         <Container maxWidth="xl" sx={{ py: 3 }}>
-        <Box display="flex" gap={3} flexDirection={{ xs: 'column', md: 'row' }} alignItems="stretch">
-          {/* Columna izquierda: Control (25%) + Timer (25%) */}
-          <Box sx={{ flex: { xs: 1, md: '0 0 50%' }, display: 'flex', gap: 3, flexDirection: { xs: 'column', md: 'row' } }}>
-            {/* Columna del Control y Velocidad */}
-            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <Box display="flex" gap={3} flexDirection={{ xs: 'column', lg: 'row' }} alignItems="stretch">
+          {/* Panel izquierdo */}
+          <Box sx={{ flex: { xs: 1, lg: '0 0 60%' }, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {/* Fila superior: Control + Timer */}
+            <Box sx={{ display: 'flex', gap: 3, flexDirection: { xs: 'column', md: 'row' } }}>
               {/* Card Control */}
               <Card 
-                sx={{ 
+                sx={{
+                  flex: 1,
                   bgcolor: isRunning ? 'success.main' : 'error.main',
                   color: 'white',
                   boxShadow: '0 15px 35px rgba(15, 15, 15, 0.25)',
@@ -545,126 +552,15 @@ function Dashboard() {
                     </Stack>
                     <Typography variant="caption" color="rgba(255, 255, 255, 0.8)" display="block" mt={2}>
                       Estado actualizado: {isRefreshing ? 'Actualizando…' : lastUpdateLabel}
+                      {socketReady ? ' • Tiempo real' : ''}
                     </Typography>
                   </Box>
                 </CardContent>
               </Card>
 
-              {/* Card Velocidad */}
+              {/* Card Timer */}
               <Card sx={{ 
-                minHeight: 300,
-                display: 'flex', 
-                alignItems: 'center', 
-                justifyContent: 'center',
-              }}>
-                <CardContent sx={{ textAlign: 'center', width: '100%' }}>
-                  <Box
-                    sx={{
-                      position: 'relative',
-                      width: 160,
-                      height: 160,
-                      mx: 'auto',
-                      mb: 3,
-                    }}
-                  >
-                    <svg width="160" height="160" viewBox="0 0 160 160">
-                      <circle
-                        cx="80"
-                        cy="80"
-                        r={SPEED_RADIUS}
-                        stroke="rgba(0,0,0,0.08)"
-                        strokeWidth="10"
-                        fill="none"
-                      />
-                      <circle
-                        ref={speedCircleRef}
-                        cx="80"
-                        cy="80"
-                        r={SPEED_RADIUS}
-                        stroke="#A395FF"
-                        strokeWidth="10"
-                        fill="none"
-                        strokeLinecap="round"
-                        strokeDasharray={SPEED_CIRCUMFERENCE}
-                        strokeDashoffset={SPEED_CIRCUMFERENCE}
-                        transform="rotate(-90 80 80)"
-                      />
-                    </svg>
-                    <Box
-                      sx={{
-                        position: 'absolute',
-                        inset: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexDirection: 'column',
-                      }}
-                    >
-                      <Typography 
-                        ref={speedNumberRef}
-                        variant="h3" 
-                        fontWeight={700} 
-                        color="text.primary"
-                      >
-                        {beltSpeed}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        RPM
-                      </Typography>
-                    </Box>
-                  </Box>
-                  <Typography variant="body2" color="text.secondary">
-                    Velocidad del transportador
-                  </Typography>
-                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between" mt={3}>
-                    {production ? (
-                      <>
-                        <Box>
-                          <Typography variant="subtitle2" color="text.secondary">
-                            Cajas pequeñas
-                          </Typography>
-                          <Typography variant="h6" fontWeight={700}>
-                            {production.smallBoxes}
-                          </Typography>
-                        </Box>
-                        <Box>
-                          <Typography variant="subtitle2" color="text.secondary">
-                            Cajas medianas
-                          </Typography>
-                          <Typography variant="h6" fontWeight={700}>
-                            {production.mediumBoxes}
-                          </Typography>
-                        </Box>
-                        <Box>
-                          <Typography variant="subtitle2" color="text.secondary">
-                            Cajas grandes
-                          </Typography>
-                          <Typography variant="h6" fontWeight={700}>
-                            {production.largeBoxes}
-                          </Typography>
-                        </Box>
-                        <Box>
-                          <Typography variant="subtitle2" color="text.secondary">
-                            Total
-                          </Typography>
-                          <Typography variant="h6" fontWeight={700}>
-                            {production.total}
-                          </Typography>
-                        </Box>
-                      </>
-                    ) : (
-                      <Typography variant="body2" color="text.secondary" sx={{ width: '100%' }}>
-                        Sin datos de producción
-                      </Typography>
-                    )}
-                  </Stack>
-                </CardContent>
-              </Card>
-            </Box>
-
-            {/* Card Timer */}
-            <Box sx={{ flex: 1 }}>
-              <Card sx={{ 
+                flex: 1,
                 height: 300,
                 display: 'flex', 
                 alignItems: 'center', 
@@ -711,10 +607,111 @@ function Dashboard() {
                 </CardContent>
               </Card>
             </Box>
+
+            {/* Conteo de cajas */}
+            <Card
+              sx={{
+                minHeight: 260,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <CardContent sx={{ p: 3 }}>
+                <Typography variant="h6" fontWeight={600} color="text.primary" mb={1}>
+                  Conteo de cajas
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Datos por sesión activa del turno seleccionado
+                </Typography>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' },
+                    gap: 2.5,
+                    mt: 3,
+                  }}
+                >
+                  {[
+                    {
+                      label: 'Cajas pequeñas',
+                      value: production?.smallBoxes ?? 0,
+                      size: 28,
+                      color: '#FFC58F',
+                      total: false,
+                    },
+                    {
+                      label: 'Cajas medianas',
+                      value: production?.mediumBoxes ?? 0,
+                      size: 36,
+                      color: '#A5D8FF',
+                      total: false,
+                    },
+                    {
+                      label: 'Cajas grandes',
+                      value: production?.largeBoxes ?? 0,
+                      size: 44,
+                      color: '#B5E48C',
+                      total: false,
+                    },
+                    {
+                      label: 'Total',
+                      value: production?.total ?? 0,
+                      size: 40,
+                      color: '#E599F7',
+                      total: true,
+                    },
+                  ].map((metric) => (
+                    <Box
+                      key={metric.label}
+                      sx={{
+                        textAlign: 'center',
+                        px: 1,
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          mb: 1,
+                          minHeight: 56,
+                          color: metric.color,
+                        }}
+                      >
+                        {metric.total ? (
+                          <AllInboxOutlinedIcon
+                            sx={{ fontSize: metric.size, color: metric.color }}
+                          />
+                        ) : (
+                          <Inventory2OutlinedIcon
+                            sx={{ fontSize: metric.size, color: metric.color }}
+                          />
+                        )}
+                      </Box>
+                      <Typography variant="subtitle2" color="text.secondary" fontWeight={500}>
+                        {metric.label}
+                      </Typography>
+                      <Typography variant="h5" fontWeight={700} mt={0.5}>
+                        {metric.value}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+                {production?.sessionStartedAt && (
+                  <Typography variant="body2" color="text.secondary" mt={3}>
+                    Sesión iniciada a las{' '}
+                    {new Date(production.sessionStartedAt).toLocaleTimeString()}
+                    {production.sessionStoppedAt
+                      ? ` y cerrada a las ${new Date(production.sessionStoppedAt).toLocaleTimeString()}`
+                      : ' (activa)'}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
           </Box>
 
           {/* Card Placeholder - 50% para tabla de eventos */}
-          <Box sx={{ flex: { xs: 1, md: '0 0 50%' }, display: 'flex' }}>
+          <Box sx={{ flex: { xs: 1, lg: '0 0 40%' }, display: 'flex' }}>
             <Card sx={{ 
               flex: 1, 
               display: 'flex', 

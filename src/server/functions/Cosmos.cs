@@ -1,12 +1,13 @@
 namespace functions;
 
+using Atlas.Domain;
 using Microsoft.Azure.Cosmos;
 
-public class CosmosService
+public class Cosmos
 {
     private readonly Container _container;
 
-    public CosmosService(CosmosClient cosmosClient)
+    public Cosmos(CosmosClient cosmosClient)
     {
         _container = cosmosClient.GetContainer("classifier-db", "shifts");
     }

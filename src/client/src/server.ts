@@ -1,4 +1,5 @@
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? 'http://localhost:5186').replace(/\/$/, '')
+const API_URL = new URL(API_BASE_URL)
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
@@ -13,23 +14,43 @@ export interface ShiftEvent {
 export interface StatusResponse {
   isRunning: boolean
   activeShift: string
+  shiftKey: string
   timestamp: string
 }
 
 export interface ProductionResponse {
+  shiftKey: string
+  shiftName: string
+  sessionId?: string
+  sessionStartedAt?: string
+  sessionStoppedAt?: string
+  isRunning: boolean
+  timestamp: string
   smallBoxes: number
   mediumBoxes: number
   largeBoxes: number
   total: number
 }
 
-export interface ShiftReport {
-  name: string
+export interface ShiftSessionSummary {
+  sessionId: string
+  startedAt: string
+  stoppedAt?: string
   smallBoxes: number
   mediumBoxes: number
   largeBoxes: number
   total: number
   events: ShiftEvent[]
+}
+
+export interface ShiftReport {
+  name: string
+  shiftKey: string
+  smallBoxes: number
+  mediumBoxes: number
+  largeBoxes: number
+  total: number
+  sessions: ShiftSessionSummary[]
 }
 
 export interface ApiErrorPayload {
@@ -98,6 +119,11 @@ export const apiClient = {
       headers: jsonHeaders,
       body: JSON.stringify({ shift }),
     }),
+}
+
+export const createProductionSocket = () => {
+  const protocol = API_URL.protocol === 'https:' ? 'wss:' : 'ws:'
+  return new WebSocket(`${protocol}//${API_URL.host}/ws/production`)
 }
 
 export type { ShiftKey }
