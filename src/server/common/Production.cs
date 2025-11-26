@@ -22,7 +22,8 @@ public class ProductionResponse
             return new ProductionResponse();
         }
 
-        var session = shift.GetActiveSession() ?? shift.Sessions.LastOrDefault();
+        // Use only the active session, not aggregates from all sessions
+        var session = shift.GetActiveSession();
         return new ProductionResponse
         {
             ShiftKey = shift.ShiftKey,

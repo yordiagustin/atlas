@@ -82,12 +82,77 @@ public class ProcessIoTTelemetry
                 }
                 shiftDocument.EnsureMetadata(metadata);
 
+                // Handle STOP event first - it should close the current session, not create a new one
+                if (payload.EventType == "STOP")
+                {
+                    var activeSession = shiftDocument.GetActiveSession();
+                    if (activeSession != null)
+                    {
+                        activeSession.StoppedAt = payload.Timestamp;
+                        shiftDocument.Status = ShiftStatus.Completed;
+                        shiftDocument.ActiveSessionId = null;
+                        
+                        // Create log for STOP
+                        var stopLog = new ShiftLog
+                        {
+                            Timestamp = payload.Timestamp,
+                            IsRunning = payload.IsRunning,
+                            EventType = payload.EventType,
+                            DeviceId = payload.DeviceId
+                        };
+                        
+                        // Check for duplicate
+                        var duplicateLog = activeSession.Logs.Any(l => 
+                            l.EventType == stopLog.EventType && 
+                            Math.Abs((l.Timestamp - stopLog.Timestamp).TotalSeconds) < 2);
+                        
+                        if (!duplicateLog)
+                        {
+                            activeSession.Logs.Add(stopLog);
+                        }
+                        
+                        // Add event
+                        var eventExists = activeSession.Events.Any(e => 
+                            e.Type == payload.EventType && 
+                            Math.Abs((e.Timestamp - payload.Timestamp).TotalSeconds) < 5);
+                        
+                        if (!eventExists)
+                        {
+                            activeSession.Events.Add(ShiftEvent.Create(payload.EventType, activeSession.SessionId));
+                        }
+                        
+                        shiftDocument.LastUpdated = DateTime.UtcNow;
+                        shiftDocument.UpdateAggregates();
+                        
+                        await _cosmos.UpsertShiftAsync(shiftDocument, payload.Date);
+                        await _broadcastRelay.BroadcastAsync(payload.Date, metadata.Key, stopLog);
+                        
+                        _logger.LogInformation("STOP processed for session {SessionId}, shift {ShiftId}", activeSession.SessionId, shiftId);
+                        return;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("STOP received but no active session found for shift {ShiftId}", shiftId);
+                        return;
+                    }
+                }
+
+                // For other events, get or create active session
                 var session = shiftDocument.GetActiveSession();
                 if (session == null)
                 {
-                    _logger.LogInformation("No active session found, creating new session for shift {ShiftId}", shiftId);
-                    session = shiftDocument.EnsureActiveSession();
-                    shiftDocument.Status = ShiftStatus.InProgress;
+                    // Only create new session for START or box detections (not for STOP)
+                    if (payload.EventType == "START" || !string.IsNullOrWhiteSpace(payload.BoxSize))
+                    {
+                        _logger.LogInformation("No active session found, creating new session for shift {ShiftId}", shiftId);
+                        session = shiftDocument.EnsureActiveSession();
+                        shiftDocument.Status = ShiftStatus.InProgress;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("No active session and event is not START or box detection, ignoring: {EventType}", payload.EventType);
+                        return;
+                    }
                 }
                 else
                 {
@@ -160,13 +225,7 @@ public class ProcessIoTTelemetry
                     {
                         session.Events.Add(ShiftEvent.Create(payload.EventType, session.SessionId));
 
-                        if (payload.EventType == "STOP")
-                        {
-                            session.StoppedAt = payload.Timestamp;
-                            shiftDocument.Status = ShiftStatus.Completed;
-                            shiftDocument.ActiveSessionId = null;
-                        }
-                        else if (payload.EventType == "START")
+                        if (payload.EventType == "START")
                         {
                             session.StartedAt = payload.Timestamp;
                             shiftDocument.Status = ShiftStatus.InProgress;
@@ -204,7 +263,19 @@ public class ProcessIoTTelemetry
                 // Only add log if there's something meaningful to log (event or box detection)
                 if (shouldAddLog && log != null)
                 {
-                    session.Logs.Add(log);
+                    // Check for duplicate logs to prevent duplicates (same eventType within 2 seconds)
+                    var duplicateLog = session.Logs.Any(l => 
+                        l.EventType == log.EventType && 
+                        Math.Abs((l.Timestamp - log.Timestamp).TotalSeconds) < 2);
+                    
+                    if (!duplicateLog)
+                    {
+                        session.Logs.Add(log);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Duplicate log {EventType} detected for session {SessionId}, skipping", log.EventType, session.SessionId);
+                    }
                 }
 
                 if (!payload.IsRunning && shiftDocument.Status == ShiftStatus.InProgress)

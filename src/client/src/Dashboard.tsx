@@ -101,6 +101,16 @@ function Dashboard() {
   
   const timerRef = useRef<HTMLDivElement>(null)
   const prevTimeRef = useRef<string>('')
+  
+  // Track previous values to detect increments
+  const prevSmallBoxes = useRef<number>(0)
+  const prevMediumBoxes = useRef<number>(0)
+  const prevLargeBoxes = useRef<number>(0)
+  
+  // Animation state for +1 indicators
+  const [showSmallPlus, setShowSmallPlus] = useState(false)
+  const [showMediumPlus, setShowMediumPlus] = useState(false)
+  const [showLargePlus, setShowLargePlus] = useState(false)
 
   const tabs: { label: string; value: 'dashboard' | 'reports' }[] = [
     { label: 'Dashboard', value: 'dashboard' },
@@ -121,6 +131,31 @@ function Dashboard() {
       if (interval) window.clearInterval(interval)
     }
   }, [isRunning])
+
+  // Detect increments and trigger +1 animations
+  useEffect(() => {
+    const currentSmall = production?.smallBoxes ?? 0
+    const currentMedium = production?.mediumBoxes ?? 0
+    const currentLarge = production?.largeBoxes ?? 0
+
+    if (currentSmall > prevSmallBoxes.current && prevSmallBoxes.current > 0) {
+      setShowSmallPlus(true)
+      setTimeout(() => setShowSmallPlus(false), 1000)
+    }
+    prevSmallBoxes.current = currentSmall
+
+    if (currentMedium > prevMediumBoxes.current && prevMediumBoxes.current > 0) {
+      setShowMediumPlus(true)
+      setTimeout(() => setShowMediumPlus(false), 1000)
+    }
+    prevMediumBoxes.current = currentMedium
+
+    if (currentLarge > prevLargeBoxes.current && prevLargeBoxes.current > 0) {
+      setShowLargePlus(true)
+      setTimeout(() => setShowLargePlus(false), 1000)
+    }
+    prevLargeBoxes.current = currentLarge
+  }, [production?.smallBoxes, production?.mediumBoxes, production?.largeBoxes])
 
   // Animación del timer - solo los números que cambian
   useEffect(() => {
@@ -263,6 +298,8 @@ function Dashboard() {
   })
 
   const applySnapshot = useCallback((snapshot: ProductionResponse) => {
+    // Always use snapshot as source of truth - don't try to merge or increment
+    // The backend has the correct aggregated values
     setProduction(snapshot)
     // Only update isRunning if realtime is enabled (we're actively running)
     // This prevents flicker when Stop is pressed and backend hasn't updated yet
@@ -282,9 +319,14 @@ function Dashboard() {
         const data = await apiClient.getLogs(currentDate, shiftKey)
         setLogs((prev) => {
           const byId = new Map<string, ShiftLog>()
+          // Add existing logs
           for (const log of prev) byId.set(log.id, log)
+          // Add new logs from API (will overwrite duplicates)
           for (const log of data) byId.set(log.id, log)
-          return Array.from(byId.values())
+          // Return sorted by timestamp (newest first)
+          return Array.from(byId.values()).sort((a, b) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          )
         })
       } catch (error) {
         console.error('Error getting logs', error)
@@ -339,8 +381,33 @@ function Dashboard() {
           }
         })
 
+        connection.on('update', (data: { log: ShiftLog; snapshot: ProductionResponse }) => {
+          // Handle log and snapshot together - guaranteed synchronization
+          if (realtimeEnabled) {
+            // Deduplicate logs by ID to prevent duplicates
+            setLogs((prev) => {
+              const exists = prev.some((l) => l.id === data.log.id)
+              if (exists) return prev
+              return [...prev, data.log].sort((a, b) => 
+                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+              )
+            })
+            
+            // Apply snapshot immediately - it's already synchronized with the log
+            applySnapshot(data.snapshot)
+          }
+        })
+
         connection.on('log', (log: ShiftLog) => {
-          setLogs((prev) => [...prev, log])
+          // Legacy handler - should not be used but keeping for backwards compatibility
+          // Deduplicate logs by ID to prevent duplicates
+          setLogs((prev) => {
+            const exists = prev.some((l) => l.id === log.id)
+            if (exists) return prev
+            return [...prev, log].sort((a, b) => 
+              new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+            )
+          })
         })
 
         connection.onreconnected(() => {
@@ -788,6 +855,7 @@ function Dashboard() {
                       size: 28,
                       color: '#FFC58F',
                       total: false,
+                      showPlus: showSmallPlus,
                     },
                     {
                       label: 'Cajas medianas',
@@ -795,6 +863,7 @@ function Dashboard() {
                       size: 36,
                       color: '#A5D8FF',
                       total: false,
+                      showPlus: showMediumPlus,
                     },
                     {
                       label: 'Cajas grandes',
@@ -802,6 +871,7 @@ function Dashboard() {
                       size: 44,
                       color: '#B5E48C',
                       total: false,
+                      showPlus: showLargePlus,
                     },
                     {
                       label: 'Total',
@@ -809,6 +879,7 @@ function Dashboard() {
                       size: 40,
                       color: '#E599F7',
                       total: true,
+                      showPlus: false,
                     },
                   ].map((metric) => (
                     <Box
@@ -816,6 +887,7 @@ function Dashboard() {
                       sx={{
                         textAlign: 'center',
                         px: 1,
+                        position: 'relative',
                       }}
                     >
                       <Box
@@ -841,9 +913,44 @@ function Dashboard() {
                       <Typography variant="subtitle2" color="text.secondary" fontWeight={500}>
                         {metric.label}
                       </Typography>
-                      <Typography variant="h5" fontWeight={700} mt={0.5}>
-                        {metric.value}
-                      </Typography>
+                      <Box sx={{ position: 'relative', display: 'inline-block' }}>
+                        <Typography variant="h5" fontWeight={700} mt={0.5}>
+                          {metric.value}
+                        </Typography>
+                        {metric.showPlus && (
+                          <Typography
+                            variant="h6"
+                            fontWeight={700}
+                            sx={{
+                              position: 'absolute',
+                              top: -8,
+                              right: -24,
+                              color: metric.color,
+                              animation: 'fadeInOut 1s ease-in-out',
+                              '@keyframes fadeInOut': {
+                                '0%': {
+                                  opacity: 0,
+                                  transform: 'translateY(0) scale(0.8)',
+                                },
+                                '20%': {
+                                  opacity: 1,
+                                  transform: 'translateY(-10px) scale(1.1)',
+                                },
+                                '80%': {
+                                  opacity: 1,
+                                  transform: 'translateY(-15px) scale(1)',
+                                },
+                                '100%': {
+                                  opacity: 0,
+                                  transform: 'translateY(-20px) scale(0.8)',
+                                },
+                              },
+                            }}
+                          >
+                            +1
+                          </Typography>
+                        )}
+                      </Box>
                     </Box>
                   ))}
                 </Box>
@@ -916,10 +1023,7 @@ function Dashboard() {
                       Aún no hay logs para este turno.
                     </Typography>
                   ) : (
-                    logs
-                      .slice()
-                      .reverse()
-                      .map((log) => (
+                    logs.map((log) => (
                         <Box
                           key={log.id}
                           sx={{

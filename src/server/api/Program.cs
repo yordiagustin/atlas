@@ -86,10 +86,19 @@ app.MapPost("/api/internal/production/broadcast", async (
     var shift = await store.GetShiftAsync(notification.Date, notification.ShiftKey);
     var snapshot = ProductionResponse.FromShift(shift);
 
-    await hub.Clients.All.SendAsync("snapshot", snapshot);
+    // Send log and snapshot together to ensure synchronization
     if (notification.Log is not null)
     {
-        await hub.Clients.All.SendAsync("log", notification.Log);
+        await hub.Clients.All.SendAsync("update", new
+        {
+            log = notification.Log,
+            snapshot = snapshot
+        });
+    }
+    else
+    {
+        // If no log, just send snapshot
+        await hub.Clients.All.SendAsync("snapshot", snapshot);
     }
 
     return Results.Accepted();
@@ -152,17 +161,23 @@ app.MapGet("/api/logs", async (string date, string shift, ShiftStore store) =>
         return Results.NotFound(new { error = "Shift not found" });
     }
 
-    var logs = doc.Sessions
-        .SelectMany(s => s.Logs.Select(l => new
-        {
-            l.Id,
-            l.Timestamp,
-            l.IsRunning,
-            l.EventType,
-            l.DeviceId,
-            SessionId = s.SessionId
-        }))
-        .OrderBy(l => l.Timestamp);
+    // Return logs only from the active session, or the most recent session if no active one
+    var activeSession = doc.GetActiveSession() ?? doc.Sessions.LastOrDefault();
+    if (activeSession == null)
+    {
+        return Results.Ok(Array.Empty<object>());
+    }
+
+    var logs = activeSession.Logs.Select(l => new
+    {
+        l.Id,
+        l.Timestamp,
+        l.IsRunning,
+        l.EventType,
+        l.DeviceId,
+        SessionId = activeSession.SessionId
+    })
+    .OrderByDescending(l => l.Timestamp);
 
     return Results.Ok(logs);
 }).WithName("GetLogs");
