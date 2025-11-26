@@ -137,22 +137,15 @@ public class ProcessIoTTelemetry
                     }
                 }
 
-                // For other events, get or create active session
+                // Get active session - API is responsible for creating sessions, Function only uses them
                 var session = shiftDocument.GetActiveSession();
                 if (session == null)
                 {
-                    // Only create new session for START or box detections (not for STOP)
-                    if (payload.EventType == "START" || !string.IsNullOrWhiteSpace(payload.BoxSize))
-                    {
-                        _logger.LogInformation("No active session found, creating new session for shift {ShiftId}", shiftId);
-                        session = shiftDocument.EnsureActiveSession();
-                        shiftDocument.Status = ShiftStatus.InProgress;
-                    }
-                    else
-                    {
-                        _logger.LogWarning("No active session and event is not START or box detection, ignoring: {EventType}", payload.EventType);
-                        return;
-                    }
+                    // No active session - this should not happen if API created it properly
+                    // But if device sends telemetry before API creates session, we'll log and ignore
+                    _logger.LogWarning("No active session found for shift {ShiftId}. API should create session first. Ignoring message with EventType: {EventType}, BoxSize: {BoxSize}", 
+                        shiftId, payload.EventType, payload.BoxSize);
+                    return;
                 }
                 else
                 {
