@@ -24,16 +24,17 @@ jobs:
           dotnet-version: '9.x'
 
       - name: Build with dotnet
-        run: dotnet build --configuration Release
+        run: dotnet build src/server/atlas.sln --configuration Release
 
       - name: dotnet publish
-        run: dotnet publish -c Release -o "${{env.DOTNET_ROOT}}/myapp"
+        working-directory: src/server
+        run: dotnet publish api/atlas-api.csproj -c Release -o ../../publish
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
           name: .net-app
-          path: ${{env.DOTNET_ROOT}}/myapp
+          path: ./publish
 
   deploy:
     runs-on: windows-latest
@@ -61,5 +62,5 @@ jobs:
         with:
           app-name: 'atlas-api'
           slot-name: 'Production'
-          package: .
+          package: ./publish
           
