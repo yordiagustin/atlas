@@ -61,11 +61,9 @@ builder.Services.Configure<BroadcastOptions>(builder.Configuration.GetSection("B
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// Enable Swagger for all environments
+app.UseSwagger();
+app.UseSwaggerUI();
 
 app.UseCors("AllowReactSPA");
 
