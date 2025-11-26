@@ -264,12 +264,16 @@ function Dashboard() {
 
   const applySnapshot = useCallback((snapshot: ProductionResponse) => {
     setProduction(snapshot)
-    setIsRunning(snapshot.isRunning)
-    if (snapshot.isRunning && snapshot.shiftKey) {
-      setActiveShift(resolveShiftLabel(snapshot.shiftKey, snapshot.shiftName))
+    // Only update isRunning if realtime is enabled (we're actively running)
+    // This prevents flicker when Stop is pressed and backend hasn't updated yet
+    if (realtimeEnabled) {
+      setIsRunning(snapshot.isRunning)
+      if (snapshot.isRunning && snapshot.shiftKey) {
+        setActiveShift(resolveShiftLabel(snapshot.shiftKey, snapshot.shiftName))
+      }
     }
     setLastUpdated(snapshot.timestamp)
-  }, [])
+  }, [realtimeEnabled])
 
   const fetchLogs = useCallback(
     async (currentDate: string, shiftKey: ShiftKey) => {
@@ -299,9 +303,13 @@ function Dashboard() {
         apiClient.getStatus(),
         apiClient.getCurrentProduction(),
       ])
-      setIsRunning(status.isRunning)
-      if (status.isRunning && status.shiftKey) {
-        setActiveShift(resolveShiftLabel(status.shiftKey, status.activeShift))
+      // Only update isRunning from backend if realtime is enabled
+      // This prevents flicker when Stop is pressed
+      if (realtimeEnabled) {
+        setIsRunning(status.isRunning)
+        if (status.isRunning && status.shiftKey) {
+          setActiveShift(resolveShiftLabel(status.shiftKey, status.activeShift))
+        }
       }
       setLastUpdated(status.timestamp)
       applySnapshot(currentProduction)
@@ -314,7 +322,7 @@ function Dashboard() {
     } finally {
       setIsRefreshing(false)
     }
-  }, [activeShift, applySnapshot, fetchLogs])
+  }, [activeShift, applySnapshot, fetchLogs, realtimeEnabled])
 
   // Abrir/cerrar conexión SignalR solo mientras el sistema está en marcha
   useEffect(() => {
@@ -324,7 +332,11 @@ function Dashboard() {
         hubRef.current = connection
 
         connection.on('snapshot', (snapshot: ProductionResponse) => {
-          applySnapshot(snapshot)
+          // Only apply snapshot updates when realtime is enabled
+          // This prevents updates after Stop is pressed
+          if (realtimeEnabled) {
+            applySnapshot(snapshot)
+          }
         })
 
         connection.on('log', (log: ShiftLog) => {
@@ -411,8 +423,11 @@ function Dashboard() {
       openConfirmation(
         '¿Deseas detener la faja y cerrar la sesión actual?',
         async () => {
-          const result = await apiClient.sendStopCommand(shiftKey)
+          // Immediately set state to stopped to prevent flicker
+          setIsRunning(false)
+          setActiveTime(0)
           setRealtimeEnabled(false)
+          const result = await apiClient.sendStopCommand(shiftKey)
           return result
         },
       )
@@ -420,8 +435,10 @@ function Dashboard() {
       openConfirmation(
         `¿Iniciar la faja para el turno ${activeShift}?`,
         async () => {
-          const result = await apiClient.sendStartCommand(shiftKey)
+          // Immediately set state to running to prevent flicker
+          setIsRunning(true)
           setRealtimeEnabled(true)
+          const result = await apiClient.sendStartCommand(shiftKey)
           return result
         },
       )
@@ -439,11 +456,11 @@ function Dashboard() {
     )
   }
 
-  const handleShiftSelect = (turno: ShiftLabel) => {
-    // Solo cambiar la selección local; el turno real se define cuando se presiona Start.
-    if (turno === activeShift || isActionLoading) return
+  const handleShiftSelect = (shiftLabel: ShiftLabel) => {
+    // Only change local selection; the real shift is defined when Start is pressed.
+    if (shiftLabel === activeShift || isActionLoading) return
     if (isRunning) return
-    setActiveShift(turno)
+    setActiveShift(shiftLabel)
   }
 
   const toggleTheme = () => {
@@ -645,35 +662,35 @@ function Dashboard() {
                     <Typography variant="body2" color="rgba(255, 255, 255, 0.8)" mb={2}>
                       Estado del Sistema
                     </Typography>
-                    {/* Chips de turno */}
+                    {/* Shift chips */}
                     <Stack direction="row" spacing={1.5} flexWrap="nowrap">
-                      {SHIFT_LABELS.map((turno) => (
+                      {SHIFT_LABELS.map((shiftLabel) => (
                         <Chip
-                          key={turno}
-                          label={turno}
-                          onClick={() => handleShiftSelect(turno)}
+                          key={shiftLabel}
+                          label={shiftLabel}
+                          onClick={() => handleShiftSelect(shiftLabel)}
                           disabled={isRunning || actionDisabled}
                           sx={{
                             cursor: isRunning ? 'not-allowed' : 'pointer',
-                            opacity: activeShift === turno ? 1 : 0.5,
-                            fontWeight: activeShift === turno ? 700 : 400,
+                            opacity: activeShift === shiftLabel ? 1 : 0.5,
+                            fontWeight: activeShift === shiftLabel ? 700 : 400,
                             fontSize: '0.8rem',
                             letterSpacing: 0.4,
                             height: 30,
                             px: 2,
                             flex: 1,
-                            bgcolor: activeShift === turno 
+                            bgcolor: activeShift === shiftLabel 
                               ? 'rgba(255, 255, 255, 0.6)' 
                               : 'rgba(255, 255, 255, 0.15)',
-                            color: activeShift === turno
+                            color: activeShift === shiftLabel
                               ? 'rgba(20, 20, 20, 0.9)'
                               : 'rgba(255, 255, 255, 0.95)',
-                            border: activeShift === turno
+                            border: activeShift === shiftLabel
                               ? '2px solid rgba(255, 255, 255, 0.9)'
                               : '1px solid rgba(255, 255, 255, 0.4)',
                             '&:hover': {
-                              opacity: isRunning ? (activeShift === turno ? 1 : 0.5) : 1,
-                              bgcolor: activeShift === turno 
+                              opacity: isRunning ? (activeShift === shiftLabel ? 1 : 0.5) : 1,
+                              bgcolor: activeShift === shiftLabel 
                                 ? 'rgba(255, 255, 255, 0.8)' 
                                 : 'rgba(255, 255, 255, 0.25)',
                             },

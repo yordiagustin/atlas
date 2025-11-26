@@ -3,6 +3,7 @@ namespace functions;
 using Atlas.Domain;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 using System.Text.Json;
 
 public class ProcessIoTTelemetry
@@ -100,7 +101,10 @@ public class ProcessIoTTelemetry
                         session.Total);
                 }
 
-                // Actualizar contadores solo si vino una caja
+                ShiftLog? log = null;
+                bool shouldAddLog = false;
+
+                // Handle box detection
                 if (!string.IsNullOrWhiteSpace(payload.BoxSize))
                 {
                     _logger.LogInformation(
@@ -132,38 +136,75 @@ public class ProcessIoTTelemetry
                         session.SmallBoxes,
                         session.MediumBoxes,
                         session.LargeBoxes);
+
+                    // Create log entry for box detection
+                    log = new ShiftLog
+                    {
+                        Timestamp = payload.Timestamp,
+                        IsRunning = payload.IsRunning,
+                        EventType = $"BOX_{payload.BoxSize.ToUpperInvariant()}",
+                        DeviceId = payload.DeviceId
+                    };
+                    shouldAddLog = true;
                 }
 
-                // Heartbeat/log snapshot for this session
-                var log = new ShiftLog
-                {
-                    Timestamp = payload.Timestamp,
-                    IsRunning = payload.IsRunning,
-                    EventType = payload.EventType,
-                    DeviceId = payload.DeviceId
-                };
-                session.Logs.Add(log);
-
+                // Handle control events (START, STOP, RESTART)
                 if (!string.IsNullOrEmpty(payload.EventType))
                 {
-                    session.Events.Add(ShiftEvent.Create(payload.EventType, session.SessionId));
+                    // Check if event already exists to prevent duplicates
+                    var eventExists = session.Events.Any(e => 
+                        e.Type == payload.EventType && 
+                        Math.Abs((e.Timestamp - payload.Timestamp).TotalSeconds) < 5);
+                    
+                    if (!eventExists)
+                    {
+                        session.Events.Add(ShiftEvent.Create(payload.EventType, session.SessionId));
 
-                    if (payload.EventType == "STOP")
-                    {
-                        session.StoppedAt = payload.Timestamp;
-                        shiftDocument.Status = ShiftStatus.Completed;
-                        shiftDocument.ActiveSessionId = null;
+                        if (payload.EventType == "STOP")
+                        {
+                            session.StoppedAt = payload.Timestamp;
+                            shiftDocument.Status = ShiftStatus.Completed;
+                            shiftDocument.ActiveSessionId = null;
+                        }
+                        else if (payload.EventType == "START")
+                        {
+                            session.StartedAt = payload.Timestamp;
+                            shiftDocument.Status = ShiftStatus.InProgress;
+                        }
+                        else if (payload.EventType == "RESTART")
+                        {
+                            session.ResetCounters();
+                            shiftDocument.Status = ShiftStatus.InProgress;
+                        }
                     }
-                    else if (payload.EventType == "START")
+                    else
                     {
-                        session.StartedAt = payload.Timestamp;
-                        shiftDocument.Status = ShiftStatus.InProgress;
+                        _logger.LogWarning("Duplicate event {EventType} detected for session {SessionId}, skipping", payload.EventType, session.SessionId);
                     }
-                    else if (payload.EventType == "RESTART")
+
+                    // Create log entry for control event
+                    if (log == null)
                     {
-                        session.ResetCounters();
-                        shiftDocument.Status = ShiftStatus.InProgress;
+                        log = new ShiftLog
+                        {
+                            Timestamp = payload.Timestamp,
+                            IsRunning = payload.IsRunning,
+                            EventType = payload.EventType,
+                            DeviceId = payload.DeviceId
+                        };
                     }
+                    else
+                    {
+                        // If log already exists (box detection), update event type to include both
+                        log.EventType = $"{payload.EventType} + {log.EventType}";
+                    }
+                    shouldAddLog = true;
+                }
+
+                // Only add log if there's something meaningful to log (event or box detection)
+                if (shouldAddLog && log != null)
+                {
+                    session.Logs.Add(log);
                 }
 
                 if (!payload.IsRunning && shiftDocument.Status == ShiftStatus.InProgress)
@@ -189,7 +230,11 @@ public class ProcessIoTTelemetry
                 await _cosmos.UpsertShiftAsync(shiftDocument, payload.Date);
                 _logger.LogInformation("Successfully persisted shift {ShiftId} to Cosmos DB", shiftId);
 
-                await _broadcastRelay.BroadcastAsync(payload.Date, metadata.Key, log);
+                // Only broadcast if there's a meaningful log entry
+                if (log != null)
+                {
+                    await _broadcastRelay.BroadcastAsync(payload.Date, metadata.Key, log);
+                }
                 _logger.LogInformation("Shift processed successfully: {shiftId}", shiftId);
             }
             catch (Exception ex)
