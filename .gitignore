@@ -137,3 +137,127 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# ============================================
+# VISUAL STUDIO
+# ============================================
+
+# Visual Studio cache/options directory
+.vs/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio cache directory
+.vs/
+
+# Visual Studio profiler
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+# ReSharper is a .NET coding add-in
+.resharper
+.resharper.user
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# Rider
+.idea/
+*.sln.iml
+
+# Compiled source files
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+
+# Package Files
+*.jar
+*.zip
+*.tar.gz
+
+# NuGet
+*.nupkg
+*.nuspec
+.nuget/
+
+# Entity Framework
+*.edmx.diagram
+
+# Dependencies
+packages/
+.paket/paket.exe
+
+# NuGet
+NuGet.exe
+nuget.exe
+
+# Cake
+tools/
+
+# MyGet
+.myget/
+
+# Publish files
+PublishProfiles/
+*.publishsettings
+
+# Azure Service Fabric local cluster
+Local/
+
+# BizTalk Build Output
+*.btp.cs
+*.btm.cs
+*.odx.cs
+*.xsd.cs
+
+# OpenCover UI analysis results
+OpenCover/
+
+# Code Coverage results
+CodeCoverage/
+
+# Local History for Visual Studio
+.localhistory/
+
+# BeatPulse healthcheck temp database
+healthchecksdb
+
+# Backup & swap files
+*.bak
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
