@@ -1,4 +1,5 @@
-const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? 'http://localhost:5186').replace(/\/$/, '')
+const API_BASE_URL = 'https://atlas-api-hth9gub2gkacdthg.eastus2-01.azurewebsites.net'
+// CONST API_BASE_URL = 'http://localhost:5186'
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 

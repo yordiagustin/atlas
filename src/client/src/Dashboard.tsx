@@ -565,8 +565,8 @@ function Dashboard() {
               <Typography variant="h5" fontWeight={600} color="text.primary">
                 Welcome back
               </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Panel de Control del Sistema
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, opacity: 0.7 }}>
+                ATLAS - Automated Tracking and Logistics Analysis System
               </Typography>
             </Box>
             <IconButton 
