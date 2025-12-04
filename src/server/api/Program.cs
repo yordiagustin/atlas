@@ -250,6 +250,9 @@ app.MapPost("/api/control/start", async (
     session.AddEvent("START");
 
     await store.SaveAsync(shift);
+    // Send SHIFT_CHANGE first to update the shift on ESP32, then START
+    await SendCommandAsync(serviceClient, "SHIFT_CHANGE", metadata.ControlValue);
+    await Task.Delay(100); // Small delay to ensure shift change is processed
     await SendCommandAsync(serviceClient, "START", metadata.ControlValue);
     await hub.Clients.All.SendAsync("snapshot", ProductionResponse.FromShift(shift));
 
@@ -306,6 +309,9 @@ app.MapPost("/api/control/restart", async (
     session.AddEvent("RESTART");
 
     await store.SaveAsync(shift);
+    // Ensure shift is updated on ESP32 before RESTART
+    await SendCommandAsync(serviceClient, "SHIFT_CHANGE", metadata.ControlValue);
+    await Task.Delay(100); // Small delay to ensure shift change is processed
     await SendCommandAsync(serviceClient, "RESTART", metadata.ControlValue);
     await hub.Clients.All.SendAsync("snapshot", ProductionResponse.FromShift(shift));
 

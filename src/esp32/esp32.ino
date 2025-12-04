@@ -186,6 +186,16 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String command = cmdRaw ? String(cmdRaw) : "";
   command.toUpperCase();
 
+  // Extract shift from payload (available in all commands)
+  const char* shiftRaw = doc["shift"] | doc["Shift"];
+  if (shiftRaw) {
+    String newShift = String(shiftRaw);
+    if (currentShift != newShift) {
+      currentShift = newShift;
+      Serial.println(">>> CAMBIO TURNO: " + currentShift);
+    }
+  }
+
   if (command == "START") {
     isRunning = true;
     setMotorState(true);
@@ -203,11 +213,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
     sendTelemetry("RESTART", "");
   }
   else if (command == "SHIFT_CHANGE") {
-    const char* shiftRaw = doc["shift"] | doc["Shift"];
-    if (shiftRaw) {
-      currentShift = String(shiftRaw);
-      Serial.println(">>> CAMBIO TURNO: " + currentShift);
-    }
+    // Shift already updated above, just acknowledge
+    Serial.println(">>> TURNO CONFIRMADO: " + currentShift);
   }
 }
 
