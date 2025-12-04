@@ -30,6 +30,9 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined'
 import AllInboxOutlinedIcon from '@mui/icons-material/AllInboxOutlined'
+import PrintIcon from '@mui/icons-material/Print'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import { apiClient } from './server'
 import type { ShiftFullReport } from './server'
 
@@ -137,6 +140,206 @@ function Reports() {
     }
   }
 
+  const generatePDF = (report: ShiftFullReport) => {
+    const doc = new jsPDF()
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const margin = 15
+    let yPosition = margin
+
+    // Título
+    doc.setFontSize(18)
+    doc.setFont('helvetica', 'bold')
+    doc.text('Reporte de Turno', pageWidth / 2, yPosition, { align: 'center' })
+    yPosition += 10
+
+    // Información del turno
+    doc.setFontSize(12)
+    doc.setFont('helvetica', 'normal')
+    doc.text(`Turno: ${SHIFT_LABELS[report.shiftKey] || report.name}`, margin, yPosition)
+    yPosition += 7
+    doc.text(`Fecha: ${report.date}`, margin, yPosition)
+    yPosition += 7
+    doc.text(`Horario: ${report.startTime} - ${report.endTime}`, margin, yPosition)
+    yPosition += 7
+    doc.text(`Estado: ${getStatusLabel(report.status)}`, margin, yPosition)
+    yPosition += 10
+
+    // Resumen agregado
+    doc.setFontSize(14)
+    doc.setFont('helvetica', 'bold')
+    doc.text('Resumen del Turno', margin, yPosition)
+    yPosition += 8
+
+    autoTable(doc, {
+      startY: yPosition,
+      head: [['Tipo', 'Cantidad']],
+      body: [
+        ['Cajas Pequeñas', report.aggregates.smallBoxes.toString()],
+        ['Cajas Medianas', report.aggregates.mediumBoxes.toString()],
+        ['Cajas Grandes', report.aggregates.largeBoxes.toString()],
+        ['Total', report.aggregates.total.toString()],
+      ],
+      theme: 'striped',
+      headStyles: { fillColor: [163, 149, 255], textColor: 255, fontStyle: 'bold' },
+      styles: { fontSize: 10 },
+      margin: { left: margin, right: margin },
+    })
+
+    yPosition = (doc as any).lastAutoTable.finalY + 10
+
+    // Sesiones
+    report.sessions.forEach((session, index) => {
+      // Verificar si necesitamos una nueva página
+      if (yPosition > doc.internal.pageSize.getHeight() - 60) {
+        doc.addPage()
+        yPosition = margin
+      }
+
+      doc.setFontSize(14)
+      doc.setFont('helvetica', 'bold')
+      doc.text(`Sesión ${index + 1}`, margin, yPosition)
+      yPosition += 7
+
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'normal')
+      doc.text(`ID: ${session.sessionId.substring(0, 16)}...`, margin, yPosition)
+      yPosition += 6
+      doc.text(`Inicio: ${formatDateTime(session.startedAt)}`, margin, yPosition)
+      yPosition += 6
+      doc.text(
+        `Fin: ${session.stoppedAt ? formatDateTime(session.stoppedAt) : 'En curso'}`,
+        margin,
+        yPosition,
+      )
+      yPosition += 6
+      doc.text(`Duración: ${getDuration(session.startedAt, session.stoppedAt)}`, margin, yPosition)
+      yPosition += 6
+
+      // Conteo de cajas de la sesión
+      doc.setFontSize(11)
+      doc.setFont('helvetica', 'bold')
+      doc.text('Conteo de Cajas:', margin, yPosition)
+      yPosition += 7
+
+      autoTable(doc, {
+        startY: yPosition,
+        head: [['Tipo', 'Cantidad']],
+        body: [
+          ['Pequeñas', session.smallBoxes.toString()],
+          ['Medianas', session.mediumBoxes.toString()],
+          ['Grandes', session.largeBoxes.toString()],
+          ['Total', session.total.toString()],
+        ],
+        theme: 'striped',
+        headStyles: { fillColor: [100, 100, 100], textColor: 255, fontStyle: 'bold' },
+        styles: { fontSize: 9 },
+        margin: { left: margin, right: margin },
+      })
+
+      yPosition = (doc as any).lastAutoTable.finalY + 8
+
+      // Eventos
+      if (session.events.length > 0) {
+        if (yPosition > doc.internal.pageSize.getHeight() - 60) {
+          doc.addPage()
+          yPosition = margin
+        }
+
+        doc.setFontSize(11)
+        doc.setFont('helvetica', 'bold')
+        doc.text(`Eventos (${session.events.length})`, margin, yPosition)
+        yPosition += 7
+
+        autoTable(doc, {
+          startY: yPosition,
+          head: [['Tipo', 'Fecha y Hora']],
+          body: session.events.map((event) => [
+            event.type,
+            formatDateTime(event.timestamp),
+          ]),
+          theme: 'striped',
+          headStyles: { fillColor: [100, 100, 100], textColor: 255, fontStyle: 'bold' },
+          styles: { fontSize: 8 },
+          margin: { left: margin, right: margin },
+        })
+
+        yPosition = (doc as any).lastAutoTable.finalY + 8
+      }
+
+      // Logs
+      if (session.logs.length > 0) {
+        if (yPosition > doc.internal.pageSize.getHeight() - 60) {
+          doc.addPage()
+          yPosition = margin
+        }
+
+        doc.setFontSize(11)
+        doc.setFont('helvetica', 'bold')
+        doc.text(`Logs (${session.logs.length})`, margin, yPosition)
+        yPosition += 7
+
+        autoTable(doc, {
+          startY: yPosition,
+          head: [['Hora', 'Tipo de Evento', 'Dispositivo', 'Estado']],
+          body: session.logs.map((log) => [
+            formatTime(log.timestamp),
+            log.eventType?.startsWith('BOX_')
+              ? `Caja ${log.eventType.split('_')[1].toLowerCase()}`
+              : log.eventType || 'N/A',
+            log.deviceId || 'N/A',
+            log.isRunning ? 'Activo' : 'Inactivo',
+          ]),
+          theme: 'striped',
+          headStyles: { fillColor: [100, 100, 100], textColor: 255, fontStyle: 'bold' },
+          styles: { fontSize: 7 },
+          margin: { left: margin, right: margin },
+          columnStyles: {
+            0: { cellWidth: 30 },
+            1: { cellWidth: 50 },
+            2: { cellWidth: 40 },
+            3: { cellWidth: 30 },
+          },
+        })
+
+        yPosition = (doc as any).lastAutoTable.finalY + 10
+      }
+
+      // Separador entre sesiones
+      if (index < report.sessions.length - 1) {
+        if (yPosition > doc.internal.pageSize.getHeight() - 30) {
+          doc.addPage()
+          yPosition = margin
+        } else {
+          yPosition += 5
+        }
+      }
+    })
+
+    // Pie de página
+    const totalPages = doc.getNumberOfPages()
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i)
+      doc.setFontSize(8)
+      doc.setFont('helvetica', 'italic')
+      doc.text(
+        `Página ${i} de ${totalPages}`,
+        pageWidth / 2,
+        doc.internal.pageSize.getHeight() - 10,
+        { align: 'center' },
+      )
+      doc.text(
+        `Generado el ${dayjs().format('DD/MM/YYYY HH:mm:ss')}`,
+        pageWidth - margin,
+        doc.internal.pageSize.getHeight() - 10,
+        { align: 'right' },
+      )
+    }
+
+    // Descargar el PDF
+    const fileName = `Reporte_${SHIFT_LABELS[report.shiftKey] || report.shiftKey}_${report.date}.pdf`
+    doc.save(fileName)
+  }
+
   return (
     <LocalizationProvider dateAdapter={AdapterDayjs}>
       <Container maxWidth="xl" sx={{ py: 4 }}>
@@ -202,11 +405,21 @@ function Reports() {
                       Fecha: {report.date} | Horario: {report.startTime} - {report.endTime}
                     </Typography>
                   </Box>
-                  <Chip
-                    label={getStatusLabel(report.status)}
-                    color={getStatusColor(report.status) as 'success' | 'warning' | 'default'}
-                    size="small"
-                  />
+                  <Box display="flex" gap={1} alignItems="center">
+                    <Button
+                      variant="outlined"
+                      startIcon={<PrintIcon />}
+                      onClick={() => generatePDF(report)}
+                      size="small"
+                    >
+                      Imprimir PDF
+                    </Button>
+                    <Chip
+                      label={getStatusLabel(report.status)}
+                      color={getStatusColor(report.status) as 'success' | 'warning' | 'default'}
+                      size="small"
+                    />
+                  </Box>
                 </Box>
 
                 <Divider sx={{ mb: 3 }} />

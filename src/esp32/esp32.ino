@@ -8,8 +8,8 @@
 #include "mbedtls/base64.h"
 
 // ---------------- CREDECIALES WIFI ----------------
-const char* ssid = "iPhone de Yordi";
-const char* password = "76223642."; 
+const char* ssid = "Tonacho";
+const char* password = "Diego2025"; 
 
 // ---------------- CONFIGURACIÓN API (WEB) ----------------
 const char* api_base_url = "https://atlas-api-hth9gub2gkacdthg.eastus2-01.azurewebsites.net";
