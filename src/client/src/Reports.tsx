@@ -21,7 +21,6 @@ import {
   TableRow,
   Button,
   Divider,
-  Grid,
 } from '@mui/material'
 import { DatePicker } from '@mui/x-date-pickers/DatePicker'
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
@@ -32,7 +31,7 @@ import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined'
 import AllInboxOutlinedIcon from '@mui/icons-material/AllInboxOutlined'
 import { apiClient } from './server'
-import type { ShiftFullReport, ShiftSessionFullReport } from './server'
+import type { ShiftFullReport } from './server'
 
 const SHIFT_LABELS: Record<string, string> = {
   manana: 'Mañana',
@@ -217,14 +216,14 @@ function Reports() {
                   <Typography variant="h6" fontWeight={600} mb={2}>
                     Resumen del Turno
                   </Typography>
-                  <Grid container spacing={2}>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' }, gap: 2 }}>
                     {[
                       { label: 'Cajas Pequeñas', value: report.aggregates.smallBoxes, color: '#FFC58F' },
                       { label: 'Cajas Medianas', value: report.aggregates.mediumBoxes, color: '#A5D8FF' },
                       { label: 'Cajas Grandes', value: report.aggregates.largeBoxes, color: '#B5E48C' },
                       { label: 'Total', value: report.aggregates.total, color: '#E599F7' },
                     ].map((metric) => (
-                      <Grid item xs={6} sm={3} key={metric.label}>
+                      <Box key={metric.label}>
                         <Paper
                           sx={{
                             p: 2,
@@ -248,9 +247,9 @@ function Reports() {
                             {metric.value}
                           </Typography>
                         </Paper>
-                      </Grid>
+                      </Box>
                     ))}
-                  </Grid>
+                  </Box>
                 </Box>
 
                 <Divider sx={{ mb: 3 }} />
@@ -305,22 +304,22 @@ function Reports() {
                                 <Typography variant="subtitle2" fontWeight={600} mb={1}>
                                   Información de la Sesión
                                 </Typography>
-                                <Grid container spacing={2}>
-                                  <Grid item xs={12} sm={6}>
+                                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' }, gap: 2 }}>
+                                  <Box>
                                     <Typography variant="caption" color="text.secondary">
                                       Inicio
                                     </Typography>
                                     <Typography variant="body2">{formatDateTime(session.startedAt)}</Typography>
-                                  </Grid>
-                                  <Grid item xs={12} sm={6}>
+                                  </Box>
+                                  <Box>
                                     <Typography variant="caption" color="text.secondary">
                                       Fin
                                     </Typography>
                                     <Typography variant="body2">
                                       {session.stoppedAt ? formatDateTime(session.stoppedAt) : 'En curso'}
                                     </Typography>
-                                  </Grid>
-                                </Grid>
+                                  </Box>
+                                </Box>
                               </Box>
 
                               {/* Conteo de Cajas */}
@@ -328,38 +327,32 @@ function Reports() {
                                 <Typography variant="subtitle2" fontWeight={600} mb={1}>
                                   Conteo de Cajas
                                 </Typography>
-                                <Grid container spacing={2}>
-                                  <Grid item xs={4}>
-                                    <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'background.default' }}>
-                                      <Typography variant="caption" color="text.secondary">
-                                        Pequeñas
-                                      </Typography>
-                                      <Typography variant="h6" color="#FFC58F">
-                                        {session.smallBoxes}
-                                      </Typography>
-                                    </Paper>
-                                  </Grid>
-                                  <Grid item xs={4}>
-                                    <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'background.default' }}>
-                                      <Typography variant="caption" color="text.secondary">
-                                        Medianas
-                                      </Typography>
-                                      <Typography variant="h6" color="#A5D8FF">
-                                        {session.mediumBoxes}
-                                      </Typography>
-                                    </Paper>
-                                  </Grid>
-                                  <Grid item xs={4}>
-                                    <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'background.default' }}>
-                                      <Typography variant="caption" color="text.secondary">
-                                        Grandes
-                                      </Typography>
-                                      <Typography variant="h6" color="#B5E48C">
-                                        {session.largeBoxes}
-                                      </Typography>
-                                    </Paper>
-                                  </Grid>
-                                </Grid>
+                                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 2 }}>
+                                  <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'background.default' }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Pequeñas
+                                    </Typography>
+                                    <Typography variant="h6" color="#FFC58F">
+                                      {session.smallBoxes}
+                                    </Typography>
+                                  </Paper>
+                                  <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'background.default' }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Medianas
+                                    </Typography>
+                                    <Typography variant="h6" color="#A5D8FF">
+                                      {session.mediumBoxes}
+                                    </Typography>
+                                  </Paper>
+                                  <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'background.default' }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Grandes
+                                    </Typography>
+                                    <Typography variant="h6" color="#B5E48C">
+                                      {session.largeBoxes}
+                                    </Typography>
+                                  </Paper>
+                                </Box>
                               </Box>
 
                               {/* Eventos */}
