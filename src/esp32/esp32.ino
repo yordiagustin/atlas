@@ -8,8 +8,8 @@
 #include "mbedtls/base64.h"
 
 // ---------------- CREDECIALES WIFI ----------------
-const char* ssid = "Tonacho";
-const char* password = "Diego2025"; 
+const char* ssid = "iPhone de Yordi";
+const char* password = "76223642."; 
 
 // ---------------- CONFIGURACIÓN API (WEB) ----------------
 const char* api_base_url = "https://atlas-api-hth9gub2gkacdthg.eastus2-01.azurewebsites.net";
@@ -24,13 +24,13 @@ String publishTopic = "devices/" + String(device_id) + "/messages/events/";
 String subscribeTopic = "devices/" + String(device_id) + "/messages/devicebound/#";
 
 // ---------------- PINES DEL HARDWARE ----------------
-const int SMALL_SENSOR_PIN = 32;
-const int MEDIUM_SENSOR_PIN = 33;
-const int LARGE_SENSOR_PIN = 25;
+const int SMALL_SENSOR_PIN = 34;
+const int MEDIUM_SENSOR_PIN = 25;
+const int LARGE_SENSOR_PIN = 32;
 
-// --- CORRECCIÓN MOTOR (L298N requiere 2 pines) ---
-const int MOTOR_PIN_1 = 26; // Conectar a IN1
-const int MOTOR_PIN_2 = 13; // Conectar a IN2 (NUEVO PIN AGREGADO)
+// --- CONFIGURACIÓN MOTOR ---
+const int MOTOR_PIN_1 = 26; 
+const int MOTOR_PIN_2 = 13; 
 
 // --- PINES DE BOTONES (Conectar a GND) ---
 const int BTN_START_PIN = 27;
@@ -42,9 +42,11 @@ bool isRunning = false;
 String currentShift = "manana"; 
 bool boxDetected = false; 
 
-// Variables para "Debounce"
 unsigned long lastButtonPress = 0;
 const int DEBOUNCE_DELAY = 1000; 
+
+// TIEMPO DE ESCANEO (Ajustar según velocidad de faja)
+const int SENSOR_SAMPLE_TIME = 600; 
 
 // ---------------- OBJETOS DE RED ----------------
 WiFiClientSecure espClient;
@@ -111,20 +113,16 @@ String getDateOnly() {
   return String(buffer);
 }
 
-// --- FUNCIÓN MOTOR (Para simplificar control) ---
 void setMotorState(bool state) {
     if (state) {
-        // AVANZAR: Uno HIGH, el otro LOW
         digitalWrite(MOTOR_PIN_1, HIGH);
         digitalWrite(MOTOR_PIN_2, LOW);
     } else {
-        // DETENER: Ambos LOW
         digitalWrite(MOTOR_PIN_1, LOW);
         digitalWrite(MOTOR_PIN_2, LOW);
     }
 }
 
-// --- FUNCIÓN PARA LLAMAR AL API DESDE LOS BOTONES ---
 void callApi(String endpoint) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
@@ -142,19 +140,15 @@ void callApi(String endpoint) {
     int httpResponseCode = http.POST(payload);
     
     if (httpResponseCode > 0) {
-      Serial.println("[API] Solicitud enviada (Codigo: " + String(httpResponseCode) + "). Esperando orden de Azure...");
+      Serial.println("[API] Solicitud enviada (Codigo: " + String(httpResponseCode) + ").");
     } else {
       Serial.println("[API] Error: " + String(httpResponseCode));
     }
     
     http.end();
     delete apiClient;
-  } else {
-    Serial.println("[API] Error: Sin WiFi");
   }
 }
-
-// ---------------- LÓGICA PRINCIPAL ----------------
 
 void sendTelemetry(String controlEvent, String boxSize) {
   if (controlEvent == "" && boxSize == "") return;
@@ -175,9 +169,8 @@ void sendTelemetry(String controlEvent, String boxSize) {
   serializeJson(doc, jsonBuffer);
 
   client.publish(publishTopic.c_str(), jsonBuffer);
-  
   String logMsg = (controlEvent != "") ? controlEvent : ("CAJA " + boxSize);
-  Serial.println(">>> TELEMETRÍA ENVIADA: " + logMsg);
+  Serial.println(">>> TELEMETRÍA: " + logMsg);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -195,43 +188,39 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   if (command == "START") {
     isRunning = true;
-    setMotorState(true); // <--- USAMOS LA NUEVA FUNCIÓN
-    Serial.println(">>> [AZURE CMD] START -> MOTOR ON");
+    setMotorState(true);
     sendTelemetry("START", "");
   }
   else if (command == "STOP") {
     isRunning = false;
-    setMotorState(false); // <--- USAMOS LA NUEVA FUNCIÓN
-    Serial.println(">>> [AZURE CMD] STOP -> MOTOR OFF");
+    setMotorState(false); 
     sendTelemetry("STOP", "");
   }
   else if (command == "RESTART") {
     isRunning = true;
-    setMotorState(true); // <--- USAMOS LA NUEVA FUNCIÓN
+    setMotorState(true); 
     boxDetected = false; 
-    Serial.println(">>> [AZURE CMD] RESTART");
     sendTelemetry("RESTART", "");
   }
   else if (command == "SHIFT_CHANGE") {
     const char* shiftRaw = doc["shift"] | doc["Shift"];
     if (shiftRaw) {
       currentShift = String(shiftRaw);
-      Serial.println(">>> [AZURE CMD] CAMBIO TURNO: " + currentShift);
+      Serial.println(">>> CAMBIO TURNO: " + currentShift);
     }
   }
 }
 
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Conectando a Azure MQTT...");
+    Serial.print("Conectando a Azure...");
     String username = String(iothub_hostname) + "/" + String(device_id) + "/?api-version=2021-04-12";
     String sas = generateSasToken();
 
     if (client.connect(device_id, username.c_str(), sas.c_str())) {
-      Serial.println(" ¡Conectado!");
+      Serial.println(" ¡OK!");
       client.subscribe(subscribeTopic.c_str());
     } else {
-      Serial.print(" Fallo rc=" + String(client.state()) + " reintento en 5s...");
       delay(5000);
     }
   }
@@ -240,86 +229,113 @@ void reconnect() {
 void setup() {
   Serial.begin(115200);
 
-  // Configuración de Sensores
-  pinMode(SMALL_SENSOR_PIN, INPUT);
-  pinMode(MEDIUM_SENSOR_PIN, INPUT);
-  pinMode(LARGE_SENSOR_PIN, INPUT);
+  // --- CONFIGURACIÓN FC-51 (Lógica Inversa) ---
+  // INPUT_PULLUP mantiene la señal en HIGH (1) cuando no hay obstáculos.
+  // Cuando el sensor ve algo, baja la señal a LOW (0).
+  pinMode(SMALL_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(MEDIUM_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(LARGE_SENSOR_PIN, INPUT_PULLUP);
   
-  // --- CONFIGURACIÓN MOTOR CORREGIDA ---
   pinMode(MOTOR_PIN_1, OUTPUT);
   pinMode(MOTOR_PIN_2, OUTPUT);
-  setMotorState(false); // Asegurar que arranque apagado
+  setMotorState(false); 
 
-  // Configuración de Botones
   pinMode(BTN_START_PIN, INPUT_PULLUP);
   pinMode(BTN_STOP_PIN, INPUT_PULLUP);
   pinMode(BTN_RESTART_PIN, INPUT_PULLUP);
 
-  // WiFi
-  Serial.printf("\nConectando a WiFi: %s ", ssid);
+  Serial.printf("\nWiFi: %s ", ssid);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println(" OK");
 
-  // Azure
   syncTime(); 
   espClient.setInsecure(); 
   client.setServer(iothub_hostname, 8883);
   client.setCallback(callback);
-  client.setBufferSize(1024); 
 }
 
 void loop() {
   if (!client.connected()) reconnect();
   client.loop(); 
 
-  // --- 1. LÓGICA DE BOTONES ---
+  // --- BOTONES ---
   if (millis() - lastButtonPress > DEBOUNCE_DELAY) {
-    if (digitalRead(BTN_START_PIN) == LOW) {
-      callApi("/api/control/start");
-      lastButtonPress = millis();
-    }
-    else if (digitalRead(BTN_STOP_PIN) == LOW) {
-      callApi("/api/control/stop");
-      lastButtonPress = millis();
-    }
-    else if (digitalRead(BTN_RESTART_PIN) == LOW) {
-      callApi("/api/control/restart");
-      lastButtonPress = millis();
-    }
+    if (digitalRead(BTN_START_PIN) == LOW) { callApi("/api/control/start"); lastButtonPress = millis(); }
+    else if (digitalRead(BTN_STOP_PIN) == LOW) { callApi("/api/control/stop"); lastButtonPress = millis(); }
+    else if (digitalRead(BTN_RESTART_PIN) == LOW) { callApi("/api/control/restart"); lastButtonPress = millis(); }
   }
 
-  // --- 2. LÓGICA DE SENSORES JERÁRQUICA ---
+  // --- LÓGICA DE SENSORES FC-51 (DETECTA CON LOW) ---
   if (isRunning) {
-    int sSmall = digitalRead(SMALL_SENSOR_PIN);
-    int sMed = digitalRead(MEDIUM_SENSOR_PIN);
-    int sLarge = digitalRead(LARGE_SENSOR_PIN);
+    
+    // FC-51 envía LOW (0) cuando detecta obstáculo
+    int nowSmall = digitalRead(SMALL_SENSOR_PIN);
+    int nowMed = digitalRead(MEDIUM_SENSOR_PIN);
+    int nowLarge = digitalRead(LARGE_SENSOR_PIN);
 
-    if (!boxDetected && (sSmall == HIGH || sMed == HIGH || sLarge == HIGH)) {
-      delay(300); 
+    // TRIGGER: Si cualquiera está en LOW (detectando)
+    if (!boxDetected && (nowSmall == LOW || nowMed == LOW || nowLarge == LOW)) {
+      
+      Serial.println("\n>>> OBJETO ENTRANDO! Iniciando escaneo...");
+      
+      bool foundLarge = false;
+      bool foundMedium = false;
+      bool foundSmall = false;
 
-      sSmall = digitalRead(SMALL_SENSOR_PIN);
-      sMed = digitalRead(MEDIUM_SENSOR_PIN);
-      sLarge = digitalRead(LARGE_SENSOR_PIN);
+      unsigned long start = millis();
+      
+      // VENTANA DE MUESTREO
+      while(millis() - start < SENSOR_SAMPLE_TIME) {
+        client.loop(); 
 
-      if (sLarge == HIGH) {
-          Serial.println(">>> SENSOR: CAJA GRANDE DETECTADA");
+        // Leemos nuevamente dentro del bucle
+        if (digitalRead(LARGE_SENSOR_PIN) == LOW) foundLarge = true;
+        if (digitalRead(MEDIUM_SENSOR_PIN) == LOW) foundMedium = true;
+        if (digitalRead(SMALL_SENSOR_PIN) == LOW) foundSmall = true;
+
+        // DIAGNÓSTICO VISUAL (Para verificar calibración)
+        // Verás letras minúsculas si detecta
+        if (digitalRead(SMALL_SENSOR_PIN) == LOW) Serial.print("s");
+        if (digitalRead(MEDIUM_SENSOR_PIN) == LOW) Serial.print("M");
+        if (digitalRead(LARGE_SENSOR_PIN) == LOW) Serial.print("L");
+
+        delay(10); 
+      }
+      Serial.println(""); 
+
+      // DECISIÓN
+      if (foundLarge) {
+          Serial.println(">>> FINAL: CAJA GRANDE");
           sendTelemetry("", "large");
       } 
-      else if (sMed == HIGH) {
-          Serial.println(">>> SENSOR: CAJA MEDIANA DETECTADA");
+      else if (foundMedium) {
+          Serial.println(">>> FINAL: CAJA MEDIANA");
           sendTelemetry("", "medium");
       } 
-      else if (sSmall == HIGH) {
-          Serial.println(">>> SENSOR: CAJA PEQUEÑA DETECTADA");
+      else if (foundSmall) {
+          Serial.println(">>> FINAL: CAJA PEQUEÑA");
           sendTelemetry("", "small");
+      } else {
+          Serial.println(">>> ERROR: Falsa alarma (ruido).");
       }
+      
       boxDetected = true; 
     }
 
-    if (boxDetected && sSmall == LOW && sMed == LOW && sLarge == LOW) {
-      boxDetected = false;
-      delay(100); 
+    // SALIDA: Esperamos a que TODOS vuelvan a HIGH (Sin obstáculo)
+    if (boxDetected) {
+       if (digitalRead(SMALL_SENSOR_PIN) == HIGH && 
+           digitalRead(MEDIUM_SENSOR_PIN) == HIGH && 
+           digitalRead(LARGE_SENSOR_PIN) == HIGH) {
+           
+           delay(200); 
+           // Doble chequeo
+           if (digitalRead(SMALL_SENSOR_PIN) == HIGH) {
+             boxDetected = false;
+             Serial.println(">>> ZONA LIBRE.");
+           }
+       }
     }
   }
 }

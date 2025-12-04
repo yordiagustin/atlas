@@ -131,6 +131,57 @@ app.MapGet("/api/production/daily", async (string date, ShiftStore store) =>
     return Results.Ok(reports);
 }).WithName("GetDailyProduction");
 
+app.MapGet("/api/reports/shift", async (string date, string shift, ShiftStore store) =>
+{
+    var doc = await store.GetShiftAsync(date, shift);
+    if (doc == null)
+    {
+        return Results.NotFound(new { error = "Shift not found" });
+    }
+
+    var report = new ShiftFullReportDto
+    {
+        Id = doc.Id,
+        ShiftKey = doc.ShiftKey,
+        Name = doc.Name,
+        Date = doc.Date,
+        StartTime = doc.StartTime,
+        EndTime = doc.EndTime,
+        Status = doc.Status,
+        ActiveSessionId = doc.ActiveSessionId,
+        Aggregates = doc.Aggregates,
+        Sessions = doc.Sessions.Select(s => new ShiftSessionReportDto
+        {
+            SessionId = s.SessionId,
+            StartedAt = s.StartedAt,
+            StoppedAt = s.StoppedAt,
+            SmallBoxes = s.SmallBoxes,
+            MediumBoxes = s.MediumBoxes,
+            LargeBoxes = s.LargeBoxes,
+            Total = s.Total,
+            Events = s.Events.Select(e => new ShiftEventReportDto
+            {
+                Id = e.Id,
+                Type = e.Type,
+                SessionId = e.SessionId,
+                Timestamp = e.Timestamp
+            }).ToList(),
+            Logs = s.Logs.Select(l => new ShiftLogReportDto
+            {
+                Id = l.Id,
+                Timestamp = l.Timestamp,
+                IsRunning = l.IsRunning,
+                EventType = l.EventType,
+                DeviceId = l.DeviceId
+            }).ToList()
+        }).ToList(),
+        CreatedAt = doc.CreatedAt,
+        LastUpdated = doc.LastUpdated
+    };
+
+    return Results.Ok(report);
+}).WithName("GetShiftReport");
+
 app.MapGet("/api/events", async (string date, string shift, ShiftStore store) =>
 {
     var doc = await store.GetShiftAsync(date, shift);
@@ -409,5 +460,51 @@ public class StatusResponse
     public string ShiftKey { get; set; } = string.Empty;
     public string ActiveShift { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
+}
+
+public class ShiftFullReportDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string ShiftKey { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Date { get; set; } = string.Empty;
+    public string StartTime { get; set; } = string.Empty;
+    public string EndTime { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? ActiveSessionId { get; set; }
+    public ShiftAggregates Aggregates { get; set; } = new();
+    public List<ShiftSessionReportDto> Sessions { get; set; } = new();
+    public DateTime CreatedAt { get; set; }
+    public DateTime LastUpdated { get; set; }
+}
+
+public class ShiftSessionReportDto
+{
+    public string SessionId { get; set; } = string.Empty;
+    public DateTime StartedAt { get; set; }
+    public DateTime? StoppedAt { get; set; }
+    public int SmallBoxes { get; set; }
+    public int MediumBoxes { get; set; }
+    public int LargeBoxes { get; set; }
+    public int Total { get; set; }
+    public List<ShiftEventReportDto> Events { get; set; } = new();
+    public List<ShiftLogReportDto> Logs { get; set; } = new();
+}
+
+public class ShiftEventReportDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string Type { get; set; } = string.Empty;
+    public string? SessionId { get; set; }
+    public DateTime Timestamp { get; set; }
+}
+
+public class ShiftLogReportDto
+{
+    public string Id { get; set; } = string.Empty;
+    public DateTime Timestamp { get; set; }
+    public bool IsRunning { get; set; }
+    public string? EventType { get; set; }
+    public string? DeviceId { get; set; }
 }
 

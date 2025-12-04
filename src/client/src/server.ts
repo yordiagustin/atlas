@@ -1,5 +1,5 @@
-const API_BASE_URL = 'https://atlas-api-hth9gub2gkacdthg.eastus2-01.azurewebsites.net'
-// CONST API_BASE_URL = 'http://localhost:5186'
+// const API_BASE_URL = 'https://atlas-api-hth9gub2gkacdthg.eastus2-01.azurewebsites.net'
+const API_BASE_URL = 'http://localhost:5186'
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
@@ -60,6 +60,53 @@ export interface ShiftReport {
   largeBoxes: number
   total: number
   sessions: ShiftSessionSummary[]
+}
+
+export interface ShiftFullReport {
+  id: string
+  shiftKey: string
+  name: string
+  date: string
+  startTime: string
+  endTime: string
+  status: string
+  activeSessionId: string | null
+  aggregates: {
+    smallBoxes: number
+    mediumBoxes: number
+    largeBoxes: number
+    total: number
+  }
+  sessions: ShiftSessionFullReport[]
+  createdAt: string
+  lastUpdated: string
+}
+
+export interface ShiftSessionFullReport {
+  sessionId: string
+  startedAt: string
+  stoppedAt: string | null
+  smallBoxes: number
+  mediumBoxes: number
+  largeBoxes: number
+  total: number
+  events: ShiftEventReport[]
+  logs: ShiftLogReport[]
+}
+
+export interface ShiftEventReport {
+  id: string
+  type: string
+  sessionId: string | null
+  timestamp: string
+}
+
+export interface ShiftLogReport {
+  id: string
+  timestamp: string
+  isRunning: boolean
+  eventType: string | null
+  deviceId: string | null
 }
 
 export interface ApiErrorPayload {
@@ -128,6 +175,8 @@ export const apiClient = {
       headers: jsonHeaders,
       body: JSON.stringify({ shift }),
     }),
+  getShiftReport: (date: string, shift: string) =>
+    request<ShiftFullReport>(`/api/reports/shift?date=${encodeURIComponent(date)}&shift=${encodeURIComponent(shift)}`),
 }
 
 import * as signalR from '@microsoft/signalr'
