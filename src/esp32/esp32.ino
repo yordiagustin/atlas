@@ -1,48 +1,52 @@
+/*
+ * ATLAS ESP32 Device - Azure IoT Hub Integration
+ * Using: Azure SDK for C (Official Microsoft Library)
+ * 
+ * Libraries required:
+ * - azure-sdk-for-c (by Microsoft)
+ * - ArduinoJson
+ */
+
 #include <WiFi.h>
-#include <AzureIoTProtocol_MQTT.h>
-#include <AzureIoTHub.h>
+#include <mqtt_client.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <az_core.h>
+#include <az_iot.h>
 
-// WiFi credentials - configure these
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
+// ==================== CONFIG ====================
 
-// Azure IoT Hub Device Connection String
-// Format: HostName=<hub-name>.azure-devices.net;DeviceId=<device-id>;SharedAccessKey=<key>
-const char* connectionString = "YOUR_DEVICE_CONNECTION_STRING";
+const char* WIFI_SSID = "iPhone de Yordi";
+const char* WIFI_PASS = "76223642.";
 
-// Device configuration
-const char* deviceId = "atlas-esp32";
-const char* defaultShift = "manana";
-const unsigned long telemetryInterval = 2000; // 2 seconds
+const char* AZURE_HOST = "atlas-iot-hub.azure-devices.net";
+const char* DEVICE_ID = "atlas-esp32";
+const char* DEVICE_KEY = "VaobZJ72xUxrR4ASVz8lyYSjzJxXgUb2Z45XUvecZNM=";
 
-// IR sensor configuration (Flying Fish modules expose digital outputs)
-const int smallSensorPin = 32;
-const int mediumSensorPin = 33;
-const int largeSensorPin = 25;
-const bool sensorActiveState = LOW;          // Flying Fish digital output is LOW when triggered
-const unsigned long sensorPollIntervalMs = 25;
-const unsigned long detectionResetDelayMs = 150;
+const char* DEFAULT_SHIFT = "manana";
+const unsigned long SENSOR_POLL_MS = 25;
+const unsigned long DETECTION_RESET_MS = 150;
 
-// DC motor (TT Motor) control pin - drive via transistor/H-bridge
-const int conveyorMotorPin = 26;
-const bool motorActiveState = HIGH;          // HIGH drives the motor, LOW stops it
+const int SMALL_SENSOR_PIN = 32;
+const int MEDIUM_SENSOR_PIN = 33;
+const int LARGE_SENSOR_PIN = 25;
+const int MOTOR_PIN = 26;
 
-// State management
-struct TelemetryState {
+// ==================== STATE ====================
+
+struct State {
   String deviceId;
   String date;
   String shift;
   bool isRunning;
-  int smallBoxes;
-  int mediumBoxes;
-  int largeBoxes;
+  int smallCount;
+  int mediumCount;
+  int largeCount;
   
   void reset() {
-    smallBoxes = 0;
-    mediumBoxes = 0;
-    largeBoxes = 0;
+    smallCount = 0;
+    mediumCount = 0;
+    largeCount = 0;
   }
   
   void changeShift(String newShift) {
@@ -50,374 +54,348 @@ struct TelemetryState {
     reset();
   }
   
-  String getCurrentDate() {
+  String getDate() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
       return "1970-01-01";
     }
-    char dateStr[11];
-    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d", &timeinfo);
-    return String(dateStr);
+    char buf[11];
+    strftime(buf, sizeof(buf), "%Y-%m-%d", &timeinfo);
+    return String(buf);
   }
   
-  String getCurrentTimestamp() {
+  String getTimestamp() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
       return "";
     }
-    char timestamp[30];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S.000Z", &timeinfo);
-    return String(timestamp);
+    char buf[30];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &timeinfo);
+    return String(buf);
   }
 };
 
-TelemetryState state;
-IOTHUB_CLIENT_LL_HANDLE iotHubClientHandle = NULL;
-unsigned long lastTelemetryTime = 0;
+State state;
+esp_mqtt_client_handle_t mqtt_client = NULL;
+az_iot_hub_client client;
+
 unsigned long lastSensorPoll = 0;
+unsigned long lastDetectionTime = 0;
 bool detectionLatched = false;
 
-// Function prototypes
-void connectWiFi();
-void connectIoT();
-void sendTelemetry(String eventType = "", String boxSize = "");
-void handleCloudCommand(String command, String shift);
-void setupTime();
-String classifyBoxFromSensors(bool smallActive, bool mediumActive, bool largeActive);
-void updateMotorState();
+// ==================== SETUP ====================
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(2000);
   
-  Serial.println("=== Atlas ESP32 Device ===");
-  Serial.println("Initializing...");
+  Serial.println("\n=== ATLAS ESP32 Device ===\n");
   
-  // Initialize state
-  state.deviceId = deviceId;
-  state.shift = defaultShift;
+  state.deviceId = "atlas-esp32";
+  state.shift = DEFAULT_SHIFT;
   state.isRunning = false;
-  state.smallBoxes = 0;
-  state.mediumBoxes = 0;
-  state.largeBoxes = 0;
-  state.date = state.getCurrentDate();
-
-  pinMode(smallSensorPin, INPUT_PULLUP);
-  pinMode(mediumSensorPin, INPUT_PULLUP);
-  pinMode(largeSensorPin, INPUT_PULLUP);
-  pinMode(conveyorMotorPin, OUTPUT);
-  digitalWrite(conveyorMotorPin, LOW); // Motor stopped by default
+  state.smallCount = 0;
+  state.mediumCount = 0;
+  state.largeCount = 0;
+  state.date = state.getDate();
   
-  // Connect to WiFi
+  pinMode(SMALL_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(MEDIUM_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(LARGE_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(MOTOR_PIN, OUTPUT);
+  digitalWrite(MOTOR_PIN, LOW);
+  
   connectWiFi();
+  syncTime();
+  initializeAzure();
+  connectMQTT();
   
-  // Setup time (NTP)
-  setupTime();
-  
-  // Connect to IoT Hub
-  connectIoT();
-  
-  Serial.println("Device ready. Waiting for commands...");
-  Serial.println("Commands: START, STOP, RESTART, SHIFT_CHANGE");
+  Serial.println("Device ready.\n");
 }
 
+// ==================== MAIN LOOP ====================
+
 void loop() {
-  // Maintain IoT Hub connection
-  if (iotHubClientHandle != NULL) {
-    IoTHubClient_LL_DoWork(iotHubClientHandle);
-  }
-
-  const unsigned long now = millis();
-  if (now - lastSensorPoll >= sensorPollIntervalMs) {
+  // Poll sensors
+  unsigned long now = millis();
+  if (now - lastSensorPoll >= SENSOR_POLL_MS) {
     lastSensorPoll = now;
-
-    const bool smallActive = digitalRead(smallSensorPin) == sensorActiveState;
-    const bool mediumActive = digitalRead(mediumSensorPin) == sensorActiveState;
-    const bool largeActive = digitalRead(largeSensorPin) == sensorActiveState;
-
+    
+    bool small = digitalRead(SMALL_SENSOR_PIN) == LOW;
+    bool medium = digitalRead(MEDIUM_SENSOR_PIN) == LOW;
+    bool large = digitalRead(LARGE_SENSOR_PIN) == LOW;
+    
     if (!state.isRunning) {
       detectionLatched = false;
     }
-    else if (!detectionLatched && smallActive) {
-      const String boxSize = classifyBoxFromSensors(smallActive, mediumActive, largeActive);
-      if (boxSize.length() > 0) {
+    else if (!detectionLatched && small) {
+      String boxSize = classifyBox(small, medium, large);
+      if (boxSize != "") {
         sendTelemetry("", boxSize);
-        detectionLatched = true;          // prevent duplicate sends while box remains in sensors
-        lastTelemetryTime = now;
+        detectionLatched = true;
+        lastDetectionTime = now;
       }
     }
-    else if (detectionLatched && !smallActive && !mediumActive && !largeActive) {
-      if (now - lastTelemetryTime >= detectionResetDelayMs) {
-        detectionLatched = false;         // ready for the next box
+    else if (detectionLatched && !small && !medium && !large) {
+      if (now - lastDetectionTime >= DETECTION_RESET_MS) {
+        detectionLatched = false;
       }
     }
   }
-
+  
   delay(5);
 }
 
+// ==================== WiFi ====================
+
 void connectWiFi() {
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(ssid);
+  Serial.print("[WiFi] Connecting to ");
+  Serial.println(WIFI_SSID);
   
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
   
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  int tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 20) {
     delay(500);
     Serial.print(".");
-    attempts++;
+    tries++;
   }
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println();
-    Serial.print("WiFi connected! IP: ");
+    Serial.print("[WiFi] Connected! IP: ");
     Serial.println(WiFi.localIP());
   } else {
     Serial.println();
-    Serial.println("WiFi connection failed!");
+    Serial.println("[WiFi] ERROR!");
     ESP.restart();
   }
 }
 
-void setupTime() {
+// ==================== TIME ====================
+
+void syncTime() {
+  Serial.print("[Time] Syncing...");
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   
-  Serial.print("Waiting for time sync...");
-  struct tm timeinfo;
-  int attempts = 0;
-  while (!getLocalTime(&timeinfo) && attempts < 10) {
-    delay(1000);
+  time_t now = time(nullptr);
+  int tries = 0;
+  while (now < 24 * 3600 && tries < 20) {
+    delay(500);
     Serial.print(".");
-    attempts++;
+    now = time(nullptr);
+    tries++;
   }
   
-  if (getLocalTime(&timeinfo)) {
-    Serial.println();
-    Serial.println("Time synchronized!");
-    state.date = state.getCurrentDate();
-  } else {
-    Serial.println();
-    Serial.println("Time sync failed, using default date");
+  Serial.println(" Done!");
+}
+
+// ==================== AZURE INITIALIZATION ====================
+
+void initializeAzure() {
+  Serial.println("[Azure] Initializing...");
+  
+  az_iot_hub_client_options options = az_iot_hub_client_default_options;
+  
+  az_iot_hub_client_init(
+    &client,
+    az_span_create((uint8_t*)AZURE_HOST, strlen(AZURE_HOST)),
+    az_span_create((uint8_t*)DEVICE_ID, strlen(DEVICE_ID)),
+    &options);
+  
+  Serial.println("[Azure] Initialized");
+}
+
+// ==================== MQTT EVENT HANDLER ====================
+
+static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
+  esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+
+  switch ((esp_mqtt_event_id_t)event_id) {
+    case MQTT_EVENT_CONNECTED:
+      Serial.println("[MQTT] Connected!");
+      
+      char sub_topic[256];
+      snprintf(sub_topic, sizeof(sub_topic), "devices/%s/messages/devicebound/#", DEVICE_ID);
+      esp_mqtt_client_subscribe(mqtt_client, sub_topic, 1);
+      Serial.println("[MQTT] Subscribed to C2D");
+      break;
+
+    case MQTT_EVENT_DATA: {
+      String topic(event->topic, event->topic_len);
+      String payload((const char*)event->data, event->data_len);
+      
+      Serial.print("[Message] Topic: ");
+      Serial.println(topic);
+      Serial.print("[Message] Payload: ");
+      Serial.println(payload);
+      
+      StaticJsonDocument<256> doc;
+      if (!deserializeJson(doc, payload)) {
+        String cmd = doc["command"] | "";
+        String shift = doc["shift"] | "";
+        handleCommand(cmd, shift);
+      }
+      break;
+    }
+
+    case MQTT_EVENT_DISCONNECTED:
+      Serial.println("[MQTT] Disconnected");
+      break;
+
+    case MQTT_EVENT_ERROR:
+      Serial.println("[MQTT] Error");
+      break;
+
+    default:
+      break;
   }
 }
 
-void connectIoT() {
-  Serial.println("Connecting to Azure IoT Hub...");
+// ==================== MQTT CONNECTION ====================
+
+void connectMQTT() {
+  Serial.println("[MQTT] Connecting...");
   
-  if (connectionString == NULL || strlen(connectionString) == 0) {
-    Serial.println("ERROR: Device connection string not configured!");
+  // Get username from Azure SDK
+  char mqtt_username[256];
+  size_t username_size = 0;
+  az_iot_hub_client_get_user_name(&client, mqtt_username, sizeof(mqtt_username), &username_size);
+  
+  // Get client ID from Azure SDK
+  char mqtt_clientid[128];
+  size_t clientid_size = 0;
+  az_iot_hub_client_get_client_id(&client, mqtt_clientid, sizeof(mqtt_clientid), &clientid_size);
+  
+  // Generate SAS token
+  time_t now = time(nullptr);
+  unsigned long expiry = now + 3600; // 1 hour
+  
+  char sas_token[512];
+  snprintf(sas_token, sizeof(sas_token),
+    "SharedAccessSignature sr=%s/devices/%s&sig=%s&se=%lu",
+    AZURE_HOST,
+    DEVICE_ID,
+    DEVICE_KEY,
+    expiry);
+  
+  // MQTT config
+  esp_mqtt_client_config_t mqtt_cfg = {};
+  
+  // Build URI
+  char mqtt_uri[512];
+  snprintf(mqtt_uri, sizeof(mqtt_uri), "mqtts://%s:8883", AZURE_HOST);
+  
+  mqtt_cfg.broker.address.uri = mqtt_uri;
+  mqtt_cfg.credentials.client_id = mqtt_clientid;
+  mqtt_cfg.credentials.username = mqtt_username;
+  mqtt_cfg.credentials.authentication.password = sas_token;
+  mqtt_cfg.network.disable_auto_reconnect = false;
+
+  mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+  
+  if (mqtt_client == NULL) {
+    Serial.println("[MQTT] ERROR: Failed to create client!");
     return;
   }
   
-  iotHubClientHandle = IoTHubClient_LL_CreateFromConnectionString(
-    connectionString, 
-    MQTT_Protocol
-  );
+  esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+  esp_mqtt_client_start(mqtt_client);
   
-  if (iotHubClientHandle == NULL) {
-    Serial.println("ERROR: Failed to create IoT Hub client!");
-    return;
-  }
-  
-  // Set message callback for C2D commands
-  IoTHubClient_LL_SetMessageCallback(iotHubClientHandle, messageCallback, NULL);
-  
-  // Set connection status callback
-  IoTHubClient_LL_SetConnectionStatusCallback(iotHubClientHandle, connectionStatusCallback, NULL);
-  
-  Serial.println("IoT Hub client created. Connecting...");
-  
-  // Wait for connection
-  int attempts = 0;
-  while (attempts < 30) {
-    IoTHubClient_LL_DoWork(iotHubClientHandle);
-    delay(100);
-    attempts++;
-  }
-  
-  Serial.println("IoT Hub connection established!");
+  Serial.println("[MQTT] Client started");
 }
 
-static IOTHUBMESSAGE_DISPOSITION_RESULT messageCallback(IOTHUB_MESSAGE_HANDLE message, void* userContextCallback) {
-  const unsigned char* buffer;
-  size_t size;
-  
-  if (IoTHubMessage_GetByteArray(message, &buffer, &size) != IOTHUB_MESSAGE_OK) {
-    return IOTHUBMESSAGE_REJECTED;
-  }
-  
-  String commandJson = String((const char*)buffer);
-  Serial.print("[C2D] Received: ");
-  Serial.println(commandJson);
-  
-  // Parse JSON command
-  StaticJsonDocument<256> doc;
-  DeserializationError error = deserializeJson(doc, commandJson);
-  
-  if (error) {
-    Serial.print("[C2D] JSON parse error: ");
-    Serial.println(error.c_str());
-    return IOTHUBMESSAGE_REJECTED;
-  }
-  
-  String command = doc["command"] | "";
-  String shift = doc["shift"] | "";
-  
-  if (command.length() > 0) {
-    handleCloudCommand(command, shift);
-  }
-  
-  return IOTHUBMESSAGE_ACCEPTED;
-}
+// ==================== COMMANDS ====================
 
-static void connectionStatusCallback(IOTHUB_CLIENT_CONNECTION_STATUS result, IOTHUB_CLIENT_CONNECTION_STATUS_REASON reason, void* userContextCallback) {
-  if (result == IOTHUB_CLIENT_CONNECTION_AUTHENTICATED) {
-    Serial.println("IoT Hub: Connected");
-  } else {
-    Serial.println("IoT Hub: Disconnected");
-  }
-}
-
-void handleCloudCommand(String command, String shift) {
+void handleCommand(String command, String shift) {
   command.toUpperCase();
   
   if (command == "START") {
     state.isRunning = true;
-    updateMotorState();
-    Serial.print("[C2D] START received for shift: ");
-    Serial.println(state.shift);
+    setMotor(true);
     sendTelemetry("START", "");
+    Serial.println("[Command] START");
   }
   else if (command == "STOP") {
     state.isRunning = false;
-    updateMotorState();
-    Serial.println("[C2D] STOP received. Stopping count.");
+    setMotor(false);
     sendTelemetry("STOP", "");
-    lastTelemetryTime = 0;
+    Serial.println("[Command] STOP");
   }
   else if (command == "RESTART") {
     state.reset();
     state.isRunning = true;
-    updateMotorState();
-    Serial.println("[C2D] RESTART received. Resetting session and counters.");
+    setMotor(true);
     sendTelemetry("RESTART", "");
+    Serial.println("[Command] RESTART");
   }
-  else if (command == "SHIFT_CHANGE") {
-    if (shift.length() > 0) {
-      state.changeShift(shift);
-      Serial.print("[C2D] SHIFT_CHANGE to: ");
-      Serial.println(state.shift);
-      Serial.println("Waiting for START command...");
-    } else {
-      Serial.println("[C2D] SHIFT_CHANGE without valid shift.");
-    }
-  }
-  else {
-    Serial.print("[C2D] Unknown command: ");
-    Serial.println(command);
+  else if (command == "SHIFT_CHANGE" && shift != "") {
+    state.changeShift(shift);
+    Serial.print("[Command] SHIFT_CHANGE to ");
+    Serial.println(shift);
   }
 }
 
-String classifyBoxFromSensors(bool smallActive, bool mediumActive, bool largeActive) {
-  if (!smallActive) {
-    return "";
-  }
-
-  if (!mediumActive && !largeActive) {
-    return "small";
-  }
-
-  if (mediumActive && !largeActive) {
-    return "medium";
-  }
-
-  if (mediumActive && largeActive) {
-    return "large";
-  }
-
-  // Fallback: if upper sensor triggers without middle, treat as large to avoid undercounting
-  if (!mediumActive && largeActive) {
-    return "large";
-  }
-
-  return "";
-}
-
-void updateMotorState() {
-  digitalWrite(conveyorMotorPin, state.isRunning ? motorActiveState : !motorActiveState);
-}
+// ==================== TELEMETRY ====================
 
 void sendTelemetry(String eventType, String boxSize) {
-  if (iotHubClientHandle == NULL) {
+  if (mqtt_client == NULL) {
     return;
   }
   
-  // Only send if there's a control event or a box was detected
-  if (eventType.length() == 0 && boxSize.length() == 0) {
-    return; // Nothing to send
+  if (eventType == "" && boxSize == "") {
+    return;
   }
   
-  // Update date if needed
-  String currentDate = state.getCurrentDate();
+  String currentDate = state.getDate();
   if (currentDate != state.date) {
     state.date = currentDate;
   }
   
-  // Create JSON payload
   StaticJsonDocument<256> doc;
   doc["deviceId"] = state.deviceId;
   doc["date"] = state.date;
   doc["shift"] = state.shift;
   doc["boxSize"] = boxSize;
   doc["isRunning"] = state.isRunning;
+  doc["smallCount"] = state.smallCount;
+  doc["mediumCount"] = state.mediumCount;
+  doc["largeCount"] = state.largeCount;
+  doc["timestamp"] = state.getTimestamp();
   
-  if (eventType.length() > 0) {
+  if (eventType != "") {
     doc["eventType"] = eventType;
-  } else {
-    doc["eventType"] = (const char*)NULL;
   }
   
-  doc["timestamp"] = state.getCurrentTimestamp();
+  String json;
+  serializeJson(doc, json);
   
-  String jsonPayload;
-  serializeJson(doc, jsonPayload);
+  char telemetry_topic[256];
+  snprintf(telemetry_topic, sizeof(telemetry_topic),
+    "devices/%s/messages/events/",
+    DEVICE_ID);
   
-  // Create and send message
-  IOTHUB_MESSAGE_HANDLE messageHandle = IoTHubMessage_CreateFromString(jsonPayload.c_str());
+  esp_mqtt_client_publish(mqtt_client, telemetry_topic, json.c_str(), 0, 1, 0);
   
-  if (messageHandle == NULL) {
-    Serial.println("ERROR: Failed to create message!");
-    return;
-  }
-  
-  IOTHUB_CLIENT_RESULT result = IoTHubClient_LL_SendEventAsync(
-    iotHubClientHandle,
-    messageHandle,
-    sendConfirmationCallback,
-    NULL
-  );
-  
-  IoTHubMessage_Destroy(messageHandle);
-  
-  if (result != IOTHUB_CLIENT_OK) {
-    Serial.print("ERROR: Failed to send message. Code: ");
-    Serial.println(result);
-  } else {
-    String action = eventType.length() > 0 ? eventType : 
-                   (boxSize.length() > 0 ? "BOX_" + boxSize : "TELEMETRY");
-    action.toUpperCase();
-    Serial.print("[Telemetry] ");
-    Serial.println(action);
-  }
+  String action = eventType != "" ? eventType : ("BOX_" + boxSize);
+  Serial.print("[Telemetry] ");
+  Serial.println(action);
 }
 
-static void sendConfirmationCallback(IOTHUB_CLIENT_CONFIRMATION_RESULT result, void* userContextCallback) {
-  if (result == IOTHUB_CLIENT_CONFIRMATION_OK) {
-    // Message sent successfully
-  } else {
-    Serial.print("Message send failed. Result: ");
-    Serial.println(result);
-  }
+// ==================== BOX CLASSIFICATION ====================
+
+String classifyBox(bool small, bool medium, bool large) {
+  if (!small) return "";
+  if (!medium && !large) return "small";
+  if (medium && !large) return "medium";
+  return "large";
+}
+
+// ==================== MOTOR CONTROL ====================
+
+void setMotor(bool on) {
+  digitalWrite(MOTOR_PIN, on ? HIGH : LOW);
+  Serial.print("[Motor] ");
+  Serial.println(on ? "ON" : "OFF");
 }
