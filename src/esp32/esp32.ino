@@ -2,14 +2,14 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <HTTPClient.h> // <--- AGREGADA: Para llamar al API Web
+#include <HTTPClient.h> 
 #include <time.h>
 #include "mbedtls/md.h"
 #include "mbedtls/base64.h"
 
 // ---------------- CREDECIALES WIFI ----------------
-const char* ssid = "iPhone de Yordi";
-const char* password = "76223642."; 
+const char* ssid = "Tonacho";
+const char* password = "Diego2025"; 
 
 // ---------------- CONFIGURACIÓN API (WEB) ----------------
 const char* api_base_url = "https://atlas-api-hth9gub2gkacdthg.eastus2-01.azurewebsites.net";
@@ -28,24 +28,23 @@ const int SMALL_SENSOR_PIN = 32;
 const int MEDIUM_SENSOR_PIN = 33;
 const int LARGE_SENSOR_PIN = 25;
 
-// Pin de Control del Driver L298N (Conectado a IN1)
-const int MOTOR_PIN = 26; 
+// --- CORRECCIÓN MOTOR (L298N requiere 2 pines) ---
+const int MOTOR_PIN_1 = 26; // Conectar a IN1
+const int MOTOR_PIN_2 = 13; // Conectar a IN2 (NUEVO PIN AGREGADO)
 
-// --- NUEVO: PINES DE BOTONES (Conectar a GND) ---
+// --- PINES DE BOTONES (Conectar a GND) ---
 const int BTN_START_PIN = 27;
 const int BTN_STOP_PIN = 14;
-const int BTN_RESTART_PIN = 12;
+const int BTN_RESTART_PIN = 21;
 
 // ---------------- VARIABLES GLOBALES ----------------
 bool isRunning = false;
 String currentShift = "manana"; 
+bool boxDetected = false; 
 
-// --- NUEVO: Variable para lógica de sensores jerárquica ---
-bool boxDetected = false; // "Cerrojo" para saber si hay una caja pasando actualmente
-
-// Variables para "Debounce" de botones (evitar múltiples clicks)
+// Variables para "Debounce"
 unsigned long lastButtonPress = 0;
-const int DEBOUNCE_DELAY = 1000; // 1 segundo entre pulsaciones
+const int DEBOUNCE_DELAY = 1000; 
 
 // ---------------- OBJETOS DE RED ----------------
 WiFiClientSecure espClient;
@@ -112,12 +111,25 @@ String getDateOnly() {
   return String(buffer);
 }
 
-// --- NUEVO: FUNCIÓN PARA LLAMAR AL API DESDE LOS BOTONES ---
+// --- FUNCIÓN MOTOR (Para simplificar control) ---
+void setMotorState(bool state) {
+    if (state) {
+        // AVANZAR: Uno HIGH, el otro LOW
+        digitalWrite(MOTOR_PIN_1, HIGH);
+        digitalWrite(MOTOR_PIN_2, LOW);
+    } else {
+        // DETENER: Ambos LOW
+        digitalWrite(MOTOR_PIN_1, LOW);
+        digitalWrite(MOTOR_PIN_2, LOW);
+    }
+}
+
+// --- FUNCIÓN PARA LLAMAR AL API DESDE LOS BOTONES ---
 void callApi(String endpoint) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     WiFiClientSecure *apiClient = new WiFiClientSecure;
-    apiClient->setInsecure(); // Saltar validación SSL para agilizar pruebas
+    apiClient->setInsecure(); 
     
     String url = String(api_base_url) + endpoint;
     Serial.println("\n[BOTON] Llamando a API: " + url);
@@ -125,7 +137,6 @@ void callApi(String endpoint) {
     http.begin(*apiClient, url);
     http.addHeader("Content-Type", "application/json");
     
-    // Enviamos el turno actual en el body
     String payload = "{\"shift\":\"" + currentShift + "\"}";
     
     int httpResponseCode = http.POST(payload);
@@ -163,10 +174,8 @@ void sendTelemetry(String controlEvent, String boxSize) {
   char jsonBuffer[512];
   serializeJson(doc, jsonBuffer);
 
-  // Serial.println("DEBUG JSON: " + String(jsonBuffer)); // Descomentar para debug
   client.publish(publishTopic.c_str(), jsonBuffer);
   
-  // Log visual para nosotros
   String logMsg = (controlEvent != "") ? controlEvent : ("CAJA " + boxSize);
   Serial.println(">>> TELEMETRÍA ENVIADA: " + logMsg);
 }
@@ -175,8 +184,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String msg = "";
   for (int i = 0; i < length; i++) msg += (char)payload[i];
   
-  // Serial.println("\n[C2D] Raw: " + msg); 
-
   StaticJsonDocument<512> doc;
   DeserializationError error = deserializeJson(doc, msg);
   
@@ -188,20 +195,20 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   if (command == "START") {
     isRunning = true;
-    digitalWrite(MOTOR_PIN, HIGH);
+    setMotorState(true); // <--- USAMOS LA NUEVA FUNCIÓN
     Serial.println(">>> [AZURE CMD] START -> MOTOR ON");
     sendTelemetry("START", "");
   }
   else if (command == "STOP") {
     isRunning = false;
-    digitalWrite(MOTOR_PIN, LOW);
+    setMotorState(false); // <--- USAMOS LA NUEVA FUNCIÓN
     Serial.println(">>> [AZURE CMD] STOP -> MOTOR OFF");
     sendTelemetry("STOP", "");
   }
   else if (command == "RESTART") {
     isRunning = true;
-    digitalWrite(MOTOR_PIN, HIGH);
-    boxDetected = false; // Resetear sensores
+    setMotorState(true); // <--- USAMOS LA NUEVA FUNCIÓN
+    boxDetected = false; 
     Serial.println(">>> [AZURE CMD] RESTART");
     sendTelemetry("RESTART", "");
   }
@@ -238,12 +245,12 @@ void setup() {
   pinMode(MEDIUM_SENSOR_PIN, INPUT);
   pinMode(LARGE_SENSOR_PIN, INPUT);
   
-  // Motor
-  pinMode(MOTOR_PIN, OUTPUT);
-  digitalWrite(MOTOR_PIN, LOW);
+  // --- CONFIGURACIÓN MOTOR CORREGIDA ---
+  pinMode(MOTOR_PIN_1, OUTPUT);
+  pinMode(MOTOR_PIN_2, OUTPUT);
+  setMotorState(false); // Asegurar que arranque apagado
 
-  // --- NUEVO: Configuración de Botones ---
-  // INPUT_PULLUP significa que el botón conecta a GND para activarse (LOW)
+  // Configuración de Botones
   pinMode(BTN_START_PIN, INPUT_PULLUP);
   pinMode(BTN_STOP_PIN, INPUT_PULLUP);
   pinMode(BTN_RESTART_PIN, INPUT_PULLUP);
@@ -266,7 +273,7 @@ void loop() {
   if (!client.connected()) reconnect();
   client.loop(); 
 
-  // --- 1. LÓGICA DE BOTONES (REQUEST A API) ---
+  // --- 1. LÓGICA DE BOTONES ---
   if (millis() - lastButtonPress > DEBOUNCE_DELAY) {
     if (digitalRead(BTN_START_PIN) == LOW) {
       callApi("/api/control/start");
@@ -284,47 +291,35 @@ void loop() {
 
   // --- 2. LÓGICA DE SENSORES JERÁRQUICA ---
   if (isRunning) {
-    // Leemos el estado actual de los sensores
     int sSmall = digitalRead(SMALL_SENSOR_PIN);
     int sMed = digitalRead(MEDIUM_SENSOR_PIN);
     int sLarge = digitalRead(LARGE_SENSOR_PIN);
 
-    // Si NO hay caja detectada actualmente Y alguno de los sensores se activa...
     if (!boxDetected && (sSmall == HIGH || sMed == HIGH || sLarge == HIGH)) {
-      
-      // ESTABILIZACIÓN:
-      // Esperamos 300ms para que la caja avance y tape correctamente todos los sensores que le corresponden.
-      // (Ej. Una caja grande primero toca el de abajo, luego el del medio, luego el de arriba).
       delay(300); 
 
-      // LEEMOS DE NUEVO para confirmar el tamaño real
       sSmall = digitalRead(SMALL_SENSOR_PIN);
       sMed = digitalRead(MEDIUM_SENSOR_PIN);
       sLarge = digitalRead(LARGE_SENSOR_PIN);
 
-      // JERARQUÍA (De arriba hacia abajo)
       if (sLarge == HIGH) {
-         Serial.println(">>> SENSOR: CAJA GRANDE DETECTADA");
-         sendTelemetry("", "large");
+          Serial.println(">>> SENSOR: CAJA GRANDE DETECTADA");
+          sendTelemetry("", "large");
       } 
       else if (sMed == HIGH) {
-         Serial.println(">>> SENSOR: CAJA MEDIANA DETECTADA");
-         sendTelemetry("", "medium");
+          Serial.println(">>> SENSOR: CAJA MEDIANA DETECTADA");
+          sendTelemetry("", "medium");
       } 
       else if (sSmall == HIGH) {
-         Serial.println(">>> SENSOR: CAJA PEQUEÑA DETECTADA");
-         sendTelemetry("", "small");
+          Serial.println(">>> SENSOR: CAJA PEQUEÑA DETECTADA");
+          sendTelemetry("", "small");
       }
-
-      // Marcamos que hay una caja pasando para no contarla doble
       boxDetected = true; 
     }
 
-    // RESETEO:
-    // Solo permitimos detectar otra caja cuando todos los sensores vuelven a estar libres (LOW)
     if (boxDetected && sSmall == LOW && sMed == LOW && sLarge == LOW) {
       boxDetected = false;
-      delay(100); // Pequeño delay de seguridad
+      delay(100); 
     }
   }
 }
