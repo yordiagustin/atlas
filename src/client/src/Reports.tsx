@@ -21,6 +21,10 @@ import {
   TableRow,
   Button,
   Divider,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material'
 import { DatePicker } from '@mui/x-date-pickers/DatePicker'
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
@@ -44,6 +48,7 @@ const SHIFT_LABELS: Record<string, string> = {
 
 function Reports() {
   const [selectedDate, setSelectedDate] = useState<Dayjs>(() => dayjs())
+  const [selectedShift, setSelectedShift] = useState<string>('all')
   const [reports, setReports] = useState<ShiftFullReport[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -392,7 +397,28 @@ function Reports() {
         </Paper>
       ) : (
         <Stack spacing={3}>
-          {reports.map((report) => (
+          {/* Filtro de Turno */}
+          {reports.length > 0 && (
+            <Box mb={2}>
+              <FormControl size="small" sx={{ minWidth: 200 }}>
+                <InputLabel>Filtrar por Turno</InputLabel>
+                <Select
+                  value={selectedShift}
+                  label="Filtrar por Turno"
+                  onChange={(e) => setSelectedShift(e.target.value)}
+                >
+                  <MenuItem value="all">Todos los Turnos</MenuItem>
+                  <MenuItem value="manana">Mañana</MenuItem>
+                  <MenuItem value="tarde">Tarde</MenuItem>
+                  <MenuItem value="noche">Noche</MenuItem>
+                </Select>
+              </FormControl>
+            </Box>
+          )}
+
+          {reports
+            .filter((report) => selectedShift === 'all' || report.shiftKey === selectedShift)
+            .map((report) => (
             <Card key={report.id} elevation={2}>
               <CardContent sx={{ p: 3 }}>
                 {/* Header del Turno */}
@@ -657,6 +683,16 @@ function Reports() {
               </CardContent>
             </Card>
           ))}
+
+          {reports.length > 0 &&
+            reports.filter((report) => selectedShift === 'all' || report.shiftKey === selectedShift)
+              .length === 0 && (
+              <Paper sx={{ p: 4, textAlign: 'center' }}>
+                <Typography variant="body1" color="text.secondary">
+                  No hay reportes disponibles para el turno seleccionado
+                </Typography>
+              </Paper>
+            )}
         </Stack>
       )}
       </Container>
